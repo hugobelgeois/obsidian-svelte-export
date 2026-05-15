@@ -1,5 +1,5 @@
 import { Notice, Plugin, TAbstractFile, TFile, TFolder } from "obsidian";
-import { exportFile } from "./pageexporter";
+import { exportFile } from "./pageExporter";
 import { ensureSvelteProject } from "./scaffold";
 import {
 	DEFAULT_SETTINGS,
@@ -15,9 +15,7 @@ export default class SvelteExporterPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
-		this.addRibbonIcon("file-code", "Export to Svelte", () =>
-			this.runExport(),
-		);
+		this.addRibbonIcon("globe", "Export to Svelte", () => this.runExport());
 
 		this.addCommand({
 			id: "export-md-to-svelte",
