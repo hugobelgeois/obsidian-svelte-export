@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-sample-plugin",
+	"name": "obsidian-svelte-export",
 	"version": "1.0.0",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"description": "This is a plugin to convert Obsidian vaults to Svelte format (https://obsidian.md)",
 	"main": "main.js",
 	"type": "module",
 	"scripts": {

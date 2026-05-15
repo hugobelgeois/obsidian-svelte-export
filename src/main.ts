@@ -1,99 +1,158 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import { Notice, Plugin, TAbstractFile, TFile, TFolder } from "obsidian";
+import { exportFile } from "./pageexporter";
+import { ensureSvelteProject } from "./scaffold";
+import {
+	DEFAULT_SETTINGS,
+	SvelteExporterSettings,
+	SvelteExporterSettingTab,
+} from "./settings";
 
-// Remember to rename these classes and interfaces!
+export type ExportCache = Record<string, number>;
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+export default class SvelteExporterPlugin extends Plugin {
+	settings: SvelteExporterSettings;
 
 	async onload() {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
+		this.addRibbonIcon("file-code", "Export to Svelte", () =>
+			this.runExport(),
+		);
+
+		this.addCommand({
+			id: "export-md-to-svelte",
+			name: "Export selected files to Svelte pages",
+			callback: () => this.runExport(),
 		});
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
+		this.addSettingTab(new SvelteExporterSettingTab(this.app, this));
+	}
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
+	async runExport() {
+		const { destinationPath, selectedPaths } = this.settings;
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
+		if (!destinationPath) {
+			new Notice(
+				"⚠️ Please set a destination path in the plugin settings.",
+			);
+			return;
+		}
+		if (!selectedPaths?.length) {
+			new Notice(
+				"⚠️ No files selected for export. Check the plugin settings.",
+			);
+			return;
+		}
+
+		const files = this.resolveFiles(selectedPaths);
+		if (!files.length) {
+			new Notice("⚠️ No markdown files found in the selected paths.");
+			return;
+		}
+
+		// Ensure a SvelteKit project exists and plugin layout files are in place
+		const ready = ensureSvelteProject(destinationPath);
+		if (!ready) return;
+
+		const cache: ExportCache = this.settings.exportCache ?? {};
+		let exported = 0,
+			skipped = 0,
+			errors = 0;
+
+		for (const file of files) {
+			try {
+				const mtime = file.stat.mtime;
+				if (
+					cache[file.path] !== undefined &&
+					cache[file.path] >= mtime
+				) {
+					skipped++;
+					continue;
 				}
-				return false;
+				await exportFile(file, destinationPath, this.app.vault);
+				cache[file.path] = mtime;
+				exported++;
+			} catch (e) {
+				console.error(
+					`[SvelteExporter] Failed to export ${file.path}:`,
+					e,
+				);
+				errors++;
 			}
-		});
+		}
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+		this.settings.exportCache = cache;
+		await this.saveSettings();
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
+		const parts: string[] = [];
+		if (exported) parts.push(`✅ ${exported} exported`);
+		if (skipped) parts.push(`⏭ ${skipped} skipped (up-to-date)`);
+		if (errors) parts.push(`❌ ${errors} error(s)`);
+		new Notice(parts.join(" · "));
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-
+		if (this.settings.openAfterExport) {
+			try {
+				// eslint-disable-next-line @typescript-eslint/no-var-requires
+				const { shell } = require("electron");
+				shell.openPath(destinationPath);
+			} catch (e) {
+				console.error(
+					"[SvelteExporter] Could not open destination folder:",
+					e,
+				);
+			}
+		}
 	}
 
-	onunload() {
+	// ── Vault file resolution ──────────────────────────────────────────────
+
+	resolveFiles(selectedPaths: string[]): TFile[] {
+		const files: TFile[] = [];
+		const seen = new Set<string>();
+
+		const add = (file: TFile) => {
+			if (!seen.has(file.path)) {
+				seen.add(file.path);
+				files.push(file);
+			}
+		};
+
+		const walk = (folder: TFolder) => {
+			for (const child of folder.children) {
+				if (child instanceof TFile && child.extension === "md")
+					add(child);
+				else if (child instanceof TFolder) walk(child);
+			}
+		};
+
+		for (const p of selectedPaths) {
+			const node: TAbstractFile | null =
+				this.app.vault.getAbstractFileByPath(p);
+			if (node instanceof TFile && node.extension === "md") add(node);
+			else if (node instanceof TFolder) walk(node);
+		}
+
+		return files;
 	}
+
+	// ── Cache ──────────────────────────────────────────────────────────────
+
+	async clearCache() {
+		this.settings.exportCache = {};
+		await this.saveSettings();
+	}
+
+	// ── Persistence ────────────────────────────────────────────────────────
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
+		this.settings = Object.assign(
+			{},
+			DEFAULT_SETTINGS,
+			await this.loadData(),
+		);
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
 	}
 }
