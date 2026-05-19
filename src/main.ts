@@ -1,5 +1,6 @@
 import { Notice, Plugin, TAbstractFile, TFile, TFolder } from "obsidian";
-import { exportFile } from "./pageExporter";
+import * as path from "path";
+import { exportFile } from "./pageexporter";
 import { ensureSvelteProject } from "./scaffold";
 import {
 	DEFAULT_SETTINGS,
@@ -49,7 +50,19 @@ export default class SvelteExporterPlugin extends Plugin {
 		}
 
 		// Ensure a SvelteKit project exists and plugin layout files are in place
-		const ready = ensureSvelteProject(destinationPath);
+		// this.manifest.dir is the vault-relative path to the plugin folder.
+		// We resolve it to an absolute path using the vault's base path.
+		const vaultPath = (this.app.vault.adapter as any).basePath as string;
+		const pluginDir = path.join(
+			vaultPath,
+			this.manifest.dir ?? `.obsidian/plugins/${this.manifest.id}`,
+		);
+
+		const ready = ensureSvelteProject(
+			destinationPath,
+			pluginDir,
+			vaultPath,
+		);
 		if (!ready) return;
 
 		const cache: ExportCache = this.settings.exportCache ?? {};
