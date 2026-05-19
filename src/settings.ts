@@ -8,21 +8,17 @@ import {
 	TFolder,
 } from "obsidian";
 import type SvelteExporterPlugin from "./main";
-import type { ExportCache } from "./main";
 
 export interface SvelteExporterSettings {
 	destinationPath: string;
 	selectedPaths: string[];
 	openAfterExport: boolean;
-	/** Stores the mtime (ms) of each file at its last successful export. */
-	exportCache: ExportCache;
 }
 
 export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	destinationPath: "",
 	selectedPaths: [],
 	openAfterExport: false,
-	exportCache: {},
 };
 
 export class SvelteExporterSettingTab extends PluginSettingTab {
@@ -110,9 +106,24 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		// ── Export cache ──────────────────────────────────────────────────
 		containerEl.createEl("h3", { text: "Export cache" });
 
-		const cacheSize = Object.keys(
-			this.plugin.settings.exportCache ?? {},
-		).length;
+		// Count entries from the destination cache file
+		let cacheSize = 0;
+		const cacheFile = this.plugin.settings.destinationPath
+			? require("path").join(
+					this.plugin.settings.destinationPath,
+					".export-cache.json",
+				)
+			: null;
+		if (cacheFile && require("fs").existsSync(cacheFile)) {
+			try {
+				const data = JSON.parse(
+					require("fs").readFileSync(cacheFile, "utf-8"),
+				);
+				cacheSize = Object.keys(data).length;
+			} catch {
+				/* ignore */
+			}
+		}
 
 		new Setting(containerEl)
 			.setName("Clear export cache")
@@ -129,7 +140,6 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 						new Notice(
 							"🗑️ Export cache cleared. All files will be re-exported on the next run.",
 						);
-						// Refresh the count shown in the description
 						this.display();
 					});
 			});

@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import { Notice, Plugin, TAbstractFile, TFile, TFolder } from "obsidian";
 import * as path from "path";
 import { exportFile } from "./pageexporter";
@@ -65,7 +66,18 @@ export default class SvelteExporterPlugin extends Plugin {
 		);
 		if (!ready) return;
 
-		const cache: ExportCache = this.settings.exportCache ?? {};
+		// Cache is stored in the destination folder so it resets when the folder
+		// is deleted or moved, forcing a full re-export.
+		const cacheFile = path.join(destinationPath, ".export-cache.json");
+		let cache: ExportCache = {};
+		if (fs.existsSync(cacheFile)) {
+			try {
+				cache = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
+			} catch {
+				cache = {};
+			}
+		}
+
 		let exported = 0,
 			skipped = 0,
 			errors = 0;
@@ -92,8 +104,7 @@ export default class SvelteExporterPlugin extends Plugin {
 			}
 		}
 
-		this.settings.exportCache = cache;
-		await this.saveSettings();
+		fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2), "utf-8");
 
 		const parts: string[] = [];
 		if (exported) parts.push(`✅ ${exported} exported`);
@@ -149,8 +160,11 @@ export default class SvelteExporterPlugin extends Plugin {
 	// ── Cache ──────────────────────────────────────────────────────────────
 
 	async clearCache() {
-		this.settings.exportCache = {};
-		await this.saveSettings();
+		const { destinationPath } = this.settings;
+		if (destinationPath) {
+			const cacheFile = path.join(destinationPath, ".export-cache.json");
+			if (fs.existsSync(cacheFile)) fs.unlinkSync(cacheFile);
+		}
 	}
 
 	// ── Persistence ────────────────────────────────────────────────────────
