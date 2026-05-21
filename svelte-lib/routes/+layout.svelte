@@ -21,3 +21,32 @@
   </main>
   <RightSidebar {theme} {toggleTheme} />
 </div>
+
+
+<div class="app-container">
+  <div class="horizontal-main-container">
+    <div class="workspace is-right-sidedock-open is-left-sidedock-open">
+      <div class="workspace-split mod-horizontal mod-sidedock mod-left-split" style="width: 300px;">
+      </div>
+
+      <div class="workspace-split mod-vertical mod-root">
+        <hr class="workspace-leaf-resize-handle">
+        <div class="workspace-tabs mod-top">
+          <hr class="workspace-leaf-resize-handle">
+          <div class="workspace-tab-container">
+            <div class="workspace-leaf">
+              <hr class="workspace-leaf-resize-handle">
+              <div class="workspace-leaf-content" data-type="empty">
+                <div class="view-content"><div class="empty-state">
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="workspace-split mod-horizontal mod-sidedock mod-right-split" style="width: 261.5px;">
+      </div>
+    </div>
+  </div>
+</div>
