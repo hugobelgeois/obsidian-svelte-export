@@ -1,11 +1,34 @@
 <script lang="ts">
 	import { siteTree, type TreeNode } from "$lib/siteTree";
+	import { hiddenPaths } from "$lib/stores";
 
 	interface Props {
 		query: string;
 		currentPath: string;
 	}
 	const { query, currentPath }: Props = $props();
+
+	// ── Hidden filtering ───────────────────────────────────────────────────
+
+	function isHidden(node: TreeNode): boolean {
+		return $hiddenPaths.some(
+			(p) => node.path === p || node.path.startsWith(p + "/"),
+		);
+	}
+
+	function filterHidden(nodes: TreeNode[]): TreeNode[] {
+		return nodes
+			.filter((n) => !isHidden(n))
+			.map((n) =>
+				n.children
+					? { ...n, children: filterHidden(n.children) }
+					: n,
+			)
+			// Remove folders that have no visible children left
+			.filter((n) => !n.children || n.children.length > 0);
+	}
+
+	// ── Search filtering ───────────────────────────────────────────────────
 
 	function matchesQuery(node: TreeNode, q: string): boolean {
 		if (!q) return true;
@@ -15,176 +38,92 @@
 		return false;
 	}
 
-	let openFolders: Record<string, boolean> = $state({});
-	const toggle = (p: string) => {
-		openFolders[p] = !openFolders[p];
-	};
+	const visibleTree = $derived(filterHidden(siteTree));
+
 	const filteredTree = $derived(
-		query ? siteTree.filter((n) => matchesQuery(n, query)) : siteTree,
+		query ? visibleTree.filter((n) => matchesQuery(n, query)) : visibleTree,
 	);
+
+	// ── Folder open state ──────────────────────────────────────────────────
+
+	let openFolders: Record<string, boolean> = $state({});
+	const toggle = (p: string) => { openFolders[p] = !openFolders[p]; };
+
+	// ── Indentation ────────────────────────────────────────────────────────
+
+	function itemStyle(depth: number): string {
+		const indent = (depth - 1) * 17;
+		return `margin-inline-start: -${indent}px !important; padding-inline-start: ${8 + indent}px !important;`;
+	}
 </script>
 
-<nav>
-	{#each filteredTree as node}
-		{#if node.children}
-			<div style="padding-left: {node.depth * 12}px">
-				<div
-					class="tree-item"
-					onclick={() => toggle(node.path)}
-					onkeydown={(e) => e.key === "Enter" && toggle(node.path)}
-					role="button"
-					tabindex="0"
-				>
-					<span class="tree-folder-toggle"
-						>{openFolders[node.path] ? "▼" : "▶"}</span
-					>
-					<svg
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-					>
-						<path
-							d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
-						/>
-					</svg>
-					<span>{node.name}</span>
-				</div>
-				<div
-					class="tree-children"
-					class:open={openFolders[node.path] || !!query}
-				>
-					{#each node.children ?? [] as child}
-						{#if child.children}
-							<div style="padding-left: {child.depth * 12}px">
-								<div
-									class="tree-item"
-									onclick={() => toggle(child.path)}
-									onkeydown={(e) =>
-										e.key === "Enter" && toggle(child.path)}
-									role="button"
-									tabindex="0"
-								>
-									<span class="tree-folder-toggle"
-										>{openFolders[child.path]
-											? "▼"
-											: "▶"}</span
-									>
-									<svg
-										viewBox="0 0 24 24"
-										fill="none"
-										stroke="currentColor"
-										stroke-width="2"
-									>
-										<path
-											d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
-										/>
-									</svg>
-									<span>{child.name}</span>
-								</div>
-								<div
-									class="tree-children"
-									class:open={openFolders[child.path] ||
-										!!query}
-								>
-									{#each child.children ?? [] as leaf}
-										<a
-											href={leaf.path}
-											class="tree-item"
-											class:active={currentPath ===
-												leaf.path}
-											style="padding-left: {leaf.depth *
-												12 +
-												8}px"
-										>
-											<svg
-												viewBox="0 0 24 24"
-												fill="none"
-												stroke="currentColor"
-												stroke-width="2"
-											>
-												<path
-													d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-												/>
-												<polyline
-													points="14 2 14 8 20 8"
-												/>
-											</svg>
-											<span>{leaf.name}</span>
-										</a>
-									{/each}
-								</div>
-							</div>
-						{:else}
-							<a
-								href={child.path}
-								class="tree-item"
-								class:active={currentPath === child.path}
-								style="padding-left: {child.depth * 12 + 8}px"
-							>
-								<svg
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="2"
-								>
-									<path
-										d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-									/>
-									<polyline points="14 2 14 8 20 8" />
-								</svg>
-								<span>{child.name}</span>
-							</a>
-						{/if}
-					{/each}
-				</div>
-			</div>
-		{:else}
-			<a
-				href={node.path}
-				class="tree-item"
-				class:active={currentPath === node.path}
-				style="padding-left: {node.depth * 12 + 8}px"
+{#snippet fileNode(node: TreeNode)}
+	<div class="tree-item nav-file" class:is-active={currentPath === node.path}>
+		<div
+			class="tree-item-self nav-file-title tappable is-clickable"
+			class:is-active={currentPath === node.path}
+			data-path={node.path}
+			style={itemStyle(node.depth)}
+		>
+			<a href={node.path} class="tree-item-inner nav-file-title-content">
+				{node.name}
+			</a>
+		</div>
+	</div>
+{/snippet}
+
+{#snippet folderNode(node: TreeNode)}
+	<div
+		class="tree-item nav-folder"
+		class:is-collapsed={!openFolders[node.path] && !query}
+	>
+		<div
+			class="tree-item-self nav-folder-title is-clickable mod-collapsible"
+			data-path={node.path}
+			role="button"
+			tabindex="0"
+			onclick={() => toggle(node.path)}
+			onkeydown={(e) => e.key === "Enter" && toggle(node.path)}
+			style={itemStyle(node.depth)}
+		>
+			<div
+				class="tree-item-icon collapse-icon"
+				class:is-collapsed={!openFolders[node.path] && !query}
 			>
 				<svg
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
+					xmlns="http://www.w3.org/2000/svg"
+					width="24" height="24" viewBox="0 0 24 24"
+					fill="none" stroke="currentColor"
+					stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+					class="svg-icon right-triangle"
 				>
-					<path
-						d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-					/>
-					<polyline points="14 2 14 8 20 8" />
+					<path d="M3 8L12 17L21 8"></path>
 				</svg>
-				<span>{node.name}</span>
-			</a>
+			</div>
+			<div class="tree-item-inner nav-folder-title-content">
+				{node.name}
+			</div>
+		</div>
+		{#if openFolders[node.path] || query}
+			<div class="tree-item-children nav-folder-children">
+				{#each node.children ?? [] as child}
+					{#if child.children}
+						{@render folderNode(child)}
+					{:else}
+						{@render fileNode(child)}
+					{/if}
+				{/each}
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
+<div>
+	{#each filteredTree as node}
+		{#if node.children}
+			{@render folderNode(node)}
+		{:else}
+			{@render fileNode(node)}
 		{/if}
 	{/each}
-</nav>
-
-<div class="tree-item nav-folder is-collapsed">
-	<div
-		class="tree-item-self nav-folder-title is-clickable mod-collapsible"
-		data-path="0_Private"
-		draggable="true"
-		style="margin-inline-start: 0px !important; padding-inline-start: 8px !important;"
-	>
-		<div class="tree-item-icon collapse-icon is-collapsed">
-			<svg
-				xmlns="http://www.w3.org/2000/svg"
-				width="24"
-				height="24"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-				class="svg-icon right-triangle"
-				><path d="M3 8L12 17L21 8"></path></svg
-			>
-		</div>
-		<div class="tree-item-inner nav-folder-title-content">0_Private</div>
-	</div>
 </div>

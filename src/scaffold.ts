@@ -99,69 +99,131 @@ function copyPluginFiles(
 		return;
 	}
 
+	// Delete static/ folder before copying (clean slate)
+	removeIfExists(path.join(destRoot, "static"));
+
 	// Copy svelte-lib/ → destRoot/src/
 	const destSrc = path.join(destRoot, "src");
 	copyRecursive(libDir, destSrc);
 
-	// Copy Obsidian theme CSS files → destRoot/src/obsidian-css/theme/
+	// Build app.css from Obsidian theme + snippets
 	const obsidianDir = path.join(vaultPath, ".obsidian");
-	const destCssDir = path.join(destRoot, "src", "obsidian-css");
-	copyThemeCss(obsidianDir, destCssDir);
-	copySnippetsCss(obsidianDir, destCssDir);
+	buildAppCss(obsidianDir, path.join(destSrc, "app.css"));
 }
 
 /**
- * Read .obsidian/appearance.json, find the active theme name (cssTheme),
- * and copy all *.css files from .obsidian/themes/<cssTheme>/ into destCssDir/theme/.
+ * Replace destRoot/src/app.css with the content of the active Obsidian theme
+ * (if any) merged with all enabled snippets, followed by a variable bridge
+ * that maps Obsidian CSS variables to the plugin's own variable names.
+ * If no theme is set, only snippets are appended to the existing app.css.
  */
-function copyThemeCss(obsidianDir: string, destCssDir: string): void {
+function buildAppCss(obsidianDir: string, appCssPath: string): void {
 	const appearancePath = path.join(obsidianDir, "appearance.json");
-	if (!fs.existsSync(appearancePath)) return;
+	let cssTheme = "";
+	let enabledSnippets: string[] = [];
 
-	let cssTheme: string;
-	try {
-		const appearance = JSON.parse(fs.readFileSync(appearancePath, "utf-8"));
-		cssTheme = appearance.cssTheme;
-	} catch {
-		console.warn("[SvelteExporter] Could not parse appearance.json");
-		return;
+	if (fs.existsSync(appearancePath)) {
+		try {
+			const appearance = JSON.parse(
+				fs.readFileSync(appearancePath, "utf-8"),
+			);
+			cssTheme = appearance.cssTheme ?? "";
+			enabledSnippets = appearance.enabledCssSnippets ?? [];
+		} catch {
+			console.warn("[SvelteExporter] Could not parse appearance.json");
+		}
 	}
 
-	if (!cssTheme) return;
+	const chunks: string[] = [];
 
-	const themeDir = path.join(obsidianDir, "themes", cssTheme);
-	const themeOut = path.join(destCssDir, "theme");
-	if (!fs.existsSync(themeDir)) return;
+	if (cssTheme) {
+		// Theme CSS replaces app.css as the base
+		const themeDir = path.join(obsidianDir, "themes", cssTheme);
+		if (fs.existsSync(themeDir)) {
+			for (const entry of fs.readdirSync(themeDir, {
+				withFileTypes: true,
+			})) {
+				if (!entry.isFile() || !entry.name.endsWith(".css")) continue;
+				chunks.push(`/* theme: ${cssTheme}/${entry.name} */`);
+				chunks.push(
+					fs.readFileSync(path.join(themeDir, entry.name), "utf-8"),
+				);
+			}
+		}
+		// Bridge: map Obsidian standard variables → plugin variables so all
+		// svelte-lib components keep working regardless of the active theme.
+		chunks.push(CSS_VARIABLE_BRIDGE);
+	} else {
+		// No theme — keep the plugin's own app.css
+		if (fs.existsSync(appCssPath)) {
+			chunks.push(fs.readFileSync(appCssPath, "utf-8"));
+		}
+	}
 
-	fs.mkdirSync(themeOut, { recursive: true });
-	for (const entry of fs.readdirSync(themeDir, { withFileTypes: true })) {
-		if (!entry.isFile() || !entry.name.endsWith(".css")) continue;
-		fs.copyFileSync(
-			path.join(themeDir, entry.name),
-			path.join(themeOut, entry.name),
-		);
+	// Snippets (only enabled ones if the list is defined, otherwise all)
+	const snippetsDir = path.join(obsidianDir, "snippets");
+	if (fs.existsSync(snippetsDir)) {
+		const allSnippets = fs
+			.readdirSync(snippetsDir)
+			.filter((f) => f.endsWith(".css"))
+			.map((f) => f.replace(/\.css$/, ""));
+
+		const toInclude =
+			enabledSnippets.length > 0
+				? allSnippets.filter((s) => enabledSnippets.includes(s))
+				: allSnippets;
+
+		for (const name of toInclude) {
+			const filePath = path.join(snippetsDir, `${name}.css`);
+			if (!fs.existsSync(filePath)) continue;
+			chunks.push(`/* snippet: ${name}.css */`);
+			chunks.push(fs.readFileSync(filePath, "utf-8"));
+		}
+	}
+
+	if (chunks.length > 0) {
+		fs.writeFileSync(appCssPath, chunks.join("\n\n"), "utf-8");
 	}
 }
 
 /**
- * Copy all *.css files from .obsidian/snippets/ into destCssDir/snippets/.
+ * Injected after the theme CSS to ensure the web layout shell works correctly.
+ * Since svelte-lib now uses native Obsidian classes (workspace, nav-*, tree-item-*),
+ * we only need to reset a few browser defaults and enforce the layout dimensions.
  */
-function copySnippetsCss(obsidianDir: string, destCssDir: string): void {
-	const snippetsDir = path.join(obsidianDir, "snippets");
-	if (!fs.existsSync(snippetsDir)) return;
+const CSS_VARIABLE_BRIDGE = `
+/* ── Plugin layout reset (injected after theme) ── */
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; overflow: hidden; }
+a { text-decoration: none; }
 
-	const snippetsOut = path.join(destCssDir, "snippets");
-	fs.mkdirSync(snippetsOut, { recursive: true });
-
-	for (const entry of fs.readdirSync(snippetsDir, { withFileTypes: true })) {
-		if (!entry.isFile() || !entry.name.endsWith(".css")) continue;
-		fs.copyFileSync(
-			path.join(snippetsDir, entry.name),
-			path.join(snippetsOut, entry.name),
-		);
-	}
+.app-container, .horizontal-main-container {
+  height: 100vh; overflow: hidden;
+  display: flex; flex-direction: column;
 }
+.workspace {
+  display: flex; flex-direction: row; height: 100vh; overflow: hidden;
+}
+.workspace-split.mod-left-split,
+.workspace-split.mod-right-split {
+  flex-shrink: 0; display: flex; flex-direction: column; overflow: hidden; transition: width .2s ease;
+}
+.workspace-split.mod-left-split  { width: 300px; }
+.workspace-split.mod-right-split { width: 262px; }
+.workspace-split.mod-left-split.is-collapsed,
+.workspace-split.mod-right-split.is-collapsed { width: 0; }
+.workspace-split.mod-root { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.workspace-tabs, .workspace-tab-container, .workspace-leaf, .workspace-leaf-content {
+  display: flex; flex-direction: column; flex: 1; overflow: hidden;
+}
+.view-content { flex: 1; overflow-y: auto; overflow-x: hidden; }
+.nav-files-container { overflow-y: auto; overflow-x: hidden; flex: 1; }
 
+/* Ensure SVG icons don't inherit theme's oversized dimensions */
+.nav-header .svg-icon,
+.clickable-icon .svg-icon { width: 16px !important; height: 16px !important; }
+.tree-item-icon .svg-icon { width: 14px !important; height: 14px !important; }
+`;
 function copyRecursive(src: string, dest: string): void {
 	fs.mkdirSync(dest, { recursive: true });
 	for (const entry of fs.readdirSync(src, { withFileTypes: true })) {

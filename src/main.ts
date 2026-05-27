@@ -50,9 +50,6 @@ export default class SvelteExporterPlugin extends Plugin {
 			return;
 		}
 
-		// Ensure a SvelteKit project exists and plugin layout files are in place
-		// this.manifest.dir is the vault-relative path to the plugin folder.
-		// We resolve it to an absolute path using the vault's base path.
 		const vaultPath = (this.app.vault.adapter as any).basePath as string;
 		const pluginDir = path.join(
 			vaultPath,
@@ -66,8 +63,25 @@ export default class SvelteExporterPlugin extends Plugin {
 		);
 		if (!ready) return;
 
-		// Cache is stored in the destination folder so it resets when the folder
-		// is deleted or moved, forcing a full re-export.
+		// ── Write hidden.json ──────────────────────────────────────────────
+		// Resolves hiddenPaths to the actual route paths that will exist in
+		// the exported site, so the client-side FileTree can filter them.
+		const hiddenRoutes = this.resolveHiddenRoutes(
+			this.settings.hiddenPaths ?? [],
+		);
+		const hiddenJsonPath = path.join(
+			destinationPath,
+			"src",
+			"lib",
+			"hidden.json",
+		);
+		fs.writeFileSync(
+			hiddenJsonPath,
+			JSON.stringify(hiddenRoutes, null, 2),
+			"utf-8",
+		);
+
+		// ── Export cache ───────────────────────────────────────────────────
 		const cacheFile = path.join(destinationPath, ".export-cache.json");
 		let cache: ExportCache = {};
 		if (fs.existsSync(cacheFile)) {
@@ -114,7 +128,6 @@ export default class SvelteExporterPlugin extends Plugin {
 
 		if (this.settings.openAfterExport) {
 			try {
-				// eslint-disable-next-line @typescript-eslint/no-var-requires
 				const { shell } = require("electron");
 				shell.openPath(destinationPath);
 			} catch (e) {
@@ -138,7 +151,6 @@ export default class SvelteExporterPlugin extends Plugin {
 				files.push(file);
 			}
 		};
-
 		const walk = (folder: TFolder) => {
 			for (const child of folder.children) {
 				if (child instanceof TFile && child.extension === "md")
@@ -153,8 +165,15 @@ export default class SvelteExporterPlugin extends Plugin {
 			if (node instanceof TFile && node.extension === "md") add(node);
 			else if (node instanceof TFolder) walk(node);
 		}
-
 		return files;
+	}
+
+	/**
+	 * Convert vault hiddenPaths (e.g. "Folder/Note.md" or "Folder") into
+	 * the route paths used in the exported site (e.g. "/Folder/Note" or "/Folder").
+	 */
+	private resolveHiddenRoutes(hiddenPaths: string[]): string[] {
+		return hiddenPaths.map((p) => "/" + p.replace(/\.md$/, ""));
 	}
 
 	// ── Cache ──────────────────────────────────────────────────────────────
@@ -176,7 +195,6 @@ export default class SvelteExporterPlugin extends Plugin {
 			await this.loadData(),
 		);
 	}
-
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
