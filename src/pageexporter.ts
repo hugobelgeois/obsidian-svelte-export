@@ -196,14 +196,19 @@ export const load: PageLoad = () => ({
 /**
  * Transform Obsidian wikilinks before markdown rendering.
  *
+ * Strategy: replace each wikilink with a placeholder token that encodes
+ * the final HTML as base64 inside the token itself. The markdown renderer
+ * sees only alphanumeric characters and leaves the token untouched.
+ * After rendering, restoreWikilinks decodes the tokens back to real HTML.
+ *
+ * This survives the plugin (Node.js) → exported site (browser) boundary
+ * because the encoded HTML is embedded in the generated +page.ts string.
+ *
  * ![[Note]]  / ![[Note#Section]]
  *   → <div class="wiki-embed" data-route="..." data-fragment="..."></div>
- *     (EmbedBlock is mounted into this at runtime — non-interactive)
  *
  * [[Note]]   / [[Note#Section]]  / [[Note|alias]]
- *   → <a href="..." class="wiki-link internal-link"
- *          data-wiki-href="..." data-wiki-fragment="...">label</a>
- *     (LinkPreview hooks on data-wiki-href for hover popups)
+ *   → <a href="..." class="wiki-link internal-link" ...>label</a>
  *
  * Unresolved → <span class="wiki-unresolved">
  */
@@ -211,6 +216,13 @@ function processWikilinks(
 	markdown: string,
 	wikilinkMap: Map<string, string>,
 ): string {
+	const encode = (html: string): string =>
+		// base64url-safe: only [A-Za-z0-9+/=] — no markdown-special chars
+		Buffer.from(html, "utf-8").toString("base64");
+
+	const placeholder = (html: string): string =>
+		`WIKISTART${encode(html)}WIKIEND`;
+
 	// Embeds first (more specific — starts with !)
 	markdown = markdown.replace(
 		/!\[\[([^\]|]+?)(?:\|([^\]]*))?\]\]/g,
@@ -218,10 +230,14 @@ function processWikilinks(
 			const resolved = resolveWikilink(target, wikilinkMap);
 			if (!resolved) {
 				const noteName = target.split("#")[0].trim();
-				return `<span class="wiki-embed wiki-unresolved">${noteName}</span>`;
+				return placeholder(
+					`<span class="wiki-embed wiki-unresolved">${noteName}</span>`,
+				);
 			}
 			const { route, fragment } = resolved;
-			return `<div class="wiki-embed" data-route="${encodeURIComponent(route)}" data-fragment="${encodeURIComponent(fragment)}"></div>`;
+			return placeholder(
+				`<div class="wiki-embed" data-route="${encodeURIComponent(route)}" data-fragment="${encodeURIComponent(fragment)}"></div>`,
+			);
 		},
 	);
 
@@ -233,11 +249,15 @@ function processWikilinks(
 			const noteName = target.split("#")[0].trim();
 			const label = alias?.trim() || noteName;
 			if (!resolved) {
-				return `<span class="wiki-link wiki-unresolved">${label}</span>`;
+				return placeholder(
+					`<span class="wiki-link wiki-unresolved">${label}</span>`,
+				);
 			}
 			const { route, fragment } = resolved;
 			const href = fragment ? `${route}#${slugify(fragment)}` : route;
-			return `<a href="${href}" class="wiki-link internal-link" data-wiki-href="${route}" data-wiki-fragment="${encodeURIComponent(fragment)}">${label}</a>`;
+			return placeholder(
+				`<a href="${href}" class="wiki-link internal-link" data-wiki-href="${route}" data-wiki-fragment="${encodeURIComponent(fragment)}">${label}</a>`,
+			);
 		},
 	);
 
