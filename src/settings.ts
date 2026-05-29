@@ -9,11 +9,16 @@ import {
 } from "obsidian";
 import type SvelteExporterPlugin from "./main";
 
+export type MarkdownStyle = "obsidian" | "custom" | "none";
+
 export interface SvelteExporterSettings {
 	destinationPath: string;
 	selectedPaths: string[];
 	hiddenPaths: string[];
 	openAfterExport: boolean;
+	markdownStyle: MarkdownStyle;
+	customCssPath: string;
+	selectedTheme: string; // "" = follow Obsidian, "__none__" = no theme, else theme name
 }
 
 export const DEFAULT_SETTINGS: SvelteExporterSettings = {
@@ -21,6 +26,9 @@ export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	selectedPaths: [],
 	hiddenPaths: [],
 	openAfterExport: false,
+	markdownStyle: "obsidian",
+	customCssPath: "",
+	selectedTheme: "__none__",
 };
 
 const IMAGE_EXTENSIONS = new Set([
@@ -120,6 +128,49 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					}),
 			);
+
+		// ── Theme ───────────────────────────────────────────────────────────
+		containerEl.createEl("h3", { text: "Appearance" });
+
+		// Enumerate available themes from .obsidian/themes/
+		const vaultPath = (this.app.vault.adapter as any).basePath as string;
+		const themesDir = require("path").join(
+			vaultPath,
+			".obsidian",
+			"themes",
+		);
+		const availableThemes: string[] = [];
+		if (require("fs").existsSync(themesDir)) {
+			for (const entry of require("fs").readdirSync(themesDir, {
+				withFileTypes: true,
+			})) {
+				if (entry.isDirectory()) availableThemes.push(entry.name);
+			}
+			availableThemes.sort();
+		}
+
+		// Dropdown options: default (no theme) + installed themes
+		const themeOptions: Record<string, string> = {
+			__none__: "Default",
+		};
+		for (const t of availableThemes) themeOptions[t] = t;
+
+		new Setting(containerEl)
+			.setName("Site theme")
+			.setDesc(
+				"Choose which Obsidian theme to use for the exported site. " +
+					"Themes are read from your vault's .obsidian/themes/ folder.",
+			)
+			.addDropdown((drop) => {
+				for (const [value, label] of Object.entries(themeOptions)) {
+					drop.addOption(value, label);
+				}
+				drop.setValue(this.plugin.settings.selectedTheme || "__none__");
+				drop.onChange(async (value) => {
+					this.plugin.settings.selectedTheme = value;
+					await this.plugin.saveSettings();
+				});
+			});
 
 		// ── Export cache ──────────────────────────────────────────────────
 		containerEl.createEl("h3", { text: "Export cache" });

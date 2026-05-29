@@ -187,9 +187,11 @@ function parseIntoSections(body: string): Section[] {
 		const hMatch = line.match(/^(#{1,6})\s+(.*)/);
 		if (hMatch) {
 			const level = hMatch[1].length;
-			const title = hMatch[2].trim();
-			const id = slugify(title);
-			const snippetName = makeSnippetName(title);
+			const titleRaw = hMatch[2].trim();
+			const titleText = stripHtml(titleRaw); // strip wikilink HTML for id/snippetName
+			const title = titleRaw; // keep HTML for display in <hN>
+			const id = slugify(titleText);
+			const snippetName = makeSnippetName(titleText);
 
 			while (stack.length > 0 && stack[stack.length - 1].level >= level) {
 				stack.pop();

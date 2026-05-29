@@ -20,6 +20,7 @@ export function ensureSvelteProject(
 	destRoot: string,
 	pluginDir: string,
 	vaultPath: string,
+	selectedTheme = "",
 ): boolean {
 	const isSvelteProject =
 		fs.existsSync(path.join(destRoot, "svelte.config.js")) ||
@@ -77,7 +78,7 @@ export function ensureSvelteProject(
 		}
 	}
 
-	copyPluginFiles(destRoot, pluginDir, vaultPath);
+	copyPluginFiles(destRoot, pluginDir, vaultPath, selectedTheme);
 	return true;
 }
 
@@ -92,6 +93,7 @@ function copyPluginFiles(
 	destRoot: string,
 	pluginDir: string,
 	vaultPath: string,
+	selectedTheme = "",
 ): void {
 	const libDir = path.join(pluginDir, "svelte-lib");
 
@@ -112,7 +114,7 @@ function copyPluginFiles(
 
 	// Build app.css from Obsidian theme + snippets
 	const obsidianDir = path.join(vaultPath, ".obsidian");
-	buildAppCss(obsidianDir, path.join(destSrc, "app.css"));
+	buildAppCss(obsidianDir, path.join(destSrc, "app.css"), selectedTheme);
 }
 
 /**
@@ -121,7 +123,11 @@ function copyPluginFiles(
  * that maps Obsidian CSS variables to the plugin's own variable names.
  * If no theme is set, only snippets are appended to the existing app.css.
  */
-function buildAppCss(obsidianDir: string, appCssPath: string): void {
+function buildAppCss(
+	obsidianDir: string,
+	appCssPath: string,
+	selectedTheme = "",
+): void {
 	const appearancePath = path.join(obsidianDir, "appearance.json");
 	let cssTheme = "";
 	let enabledSnippets: string[] = [];
@@ -131,11 +137,20 @@ function buildAppCss(obsidianDir: string, appCssPath: string): void {
 			const appearance = JSON.parse(
 				fs.readFileSync(appearancePath, "utf-8"),
 			);
-			cssTheme = appearance.cssTheme ?? "";
+			// selectedTheme="" → follow Obsidian; "__none__" → no theme; else → use named theme
+			if (selectedTheme === "__none__") {
+				cssTheme = "";
+			} else if (selectedTheme !== "") {
+				cssTheme = selectedTheme;
+			} else {
+				cssTheme = appearance.cssTheme ?? "";
+			}
 			enabledSnippets = appearance.enabledCssSnippets ?? [];
 		} catch {
 			console.warn("[SvelteExporter] Could not parse appearance.json");
 		}
+	} else if (selectedTheme !== "" && selectedTheme !== "__none__") {
+		cssTheme = selectedTheme;
 	}
 
 	const chunks: string[] = [];

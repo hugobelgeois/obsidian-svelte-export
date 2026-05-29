@@ -70,6 +70,7 @@ export default class SvelteExporterPlugin extends Plugin {
 			destinationPath,
 			pluginDir,
 			vaultPath,
+			this.settings.selectedTheme ?? "",
 		);
 		if (!ready) return;
 
