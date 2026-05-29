@@ -1,64 +1,62 @@
 /* ============================================================
    app.css — Minimal Obsidian-compatible shell styles
-   Covers only what the svelte-lib layout components use.
    ~300 lines vs Obsidian's 20k.
    ============================================================ */
 
 /* ── Reset ────────────────────────────────────────────────── */
 
 *, *::before, *::after { box-sizing: border-box; }
-body { margin: 0; overflow: hidden; font-family: var(--font-interface); }
+body { margin: 0; overflow: hidden; }
 a { text-decoration: none; color: inherit; }
-button { cursor: pointer; }
 
-/* ── CSS Variables — Dark theme (default) ─────────────────── */
+/* ── CSS Variables — Dark theme ───────────────────────────── */
 
 body.theme-dark {
-  --background-primary:          #1e1e2e;
-  --background-primary-alt:      #181825;
-  --background-secondary:        #181825;
-  --background-secondary-alt:    #11111b;
-  --background-modifier-border:  #313244;
-  --background-modifier-hover:   rgba(255,255,255,0.05);
+  --background-primary:         #1a1a1a;
+  --background-primary-alt:     #141414;
+  --background-secondary:       #141414;
+  --background-secondary-alt:   #0f0f0f;
+  --background-modifier-border: #333333;
+  --background-modifier-hover:  rgba(255,255,255,0.06);
 
-  --text-normal:        #cdd6f4;
-  --text-muted:         #6c7086;
-  --text-faint:         #45475a;
-  --text-on-accent:     #1e1e2e;
+  --text-normal:   #dcddde;
+  --text-muted:    #888888;
+  --text-faint:    #555555;
+  --text-on-accent: #ffffff;
 
-  --interactive-accent:       #cba6f7;
-  --interactive-accent-hover: #b4befe;
+  --interactive-accent:       #7b6cd9;
+  --interactive-accent-hover: #8875e0;
 
-  --link-color:         #89b4fa;
-  --link-color-hover:   #b4befe;
+  --link-color:       #7b6cd9;
+  --link-color-hover: #8875e0;
 
-  --font-interface:     ui-sans-serif, system-ui, sans-serif;
-  --font-text:          ui-sans-serif, system-ui, sans-serif;
-  --font-monospace:     ui-monospace, monospace;
-  --font-text-size:     16px;
+  --font-interface:  ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-text:       ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-monospace:  ui-monospace, "Cascadia Code", monospace;
+  --font-text-size:  16px;
 
-  --h1-color: #cdd6f4;
-  --h2-color: #cdd6f4;
-  --h3-color: #cdd6f4;
-  --h4-color: #a6adc8;
-  --h5-color: #a6adc8;
-  --h6-color: #6c7086;
+  --h1-color: #dcddde;
+  --h2-color: #dcddde;
+  --h3-color: #dcddde;
+  --h4-color: #aaaaaa;
+  --h5-color: #aaaaaa;
+  --h6-color: #888888;
 
-  --bold-color:         #cdd6f4;
-  --italic-color:       #cdd6f4;
+  --bold-color:   #dcddde;
+  --italic-color: #dcddde;
 
-  --blockquote-border-color:      #cba6f7;
-  --blockquote-background-color:  rgba(203,166,247,0.06);
-  --blockquote-color:             #cdd6f4;
+  --blockquote-border-color:     #444444;
+  --blockquote-background-color: rgba(255,255,255,0.03);
+  --blockquote-color:            #aaaaaa;
 
-  --code-background: #181825;
-  --code-normal:     #a6e3a1;
+  --code-background: #141414;
+  --code-normal:     #a8c9a0;
 
-  --table-border-color:              #313244;
-  --table-header-background:         #181825;
-  --table-row-background-hover:      rgba(255,255,255,0.04);
+  --table-border-color:         #333333;
+  --table-header-background:    #141414;
+  --table-row-background-hover: rgba(255,255,255,0.03);
 
-  --scrollbar-thumb-bg:   #313244;
+  --scrollbar-thumb-bg: #333333;
 
   color-scheme: dark;
 }
@@ -66,51 +64,51 @@ body.theme-dark {
 /* ── CSS Variables — Light theme ──────────────────────────── */
 
 body.theme-light {
-  --background-primary:          #eff1f5;
-  --background-primary-alt:      #e6e9ef;
-  --background-secondary:        #e6e9ef;
-  --background-secondary-alt:    #dce0e8;
-  --background-modifier-border:  #ccd0da;
-  --background-modifier-hover:   rgba(0,0,0,0.05);
+  --background-primary:         #ffffff;
+  --background-primary-alt:     #f5f5f5;
+  --background-secondary:       #f5f5f5;
+  --background-secondary-alt:   #ebebeb;
+  --background-modifier-border: #dddddd;
+  --background-modifier-hover:  rgba(0,0,0,0.05);
 
-  --text-normal:        #4c4f69;
-  --text-muted:         #8c8fa1;
-  --text-faint:         #acb0be;
-  --text-on-accent:     #eff1f5;
+  --text-normal:    #2e2e2e;
+  --text-muted:     #888888;
+  --text-faint:     #aaaaaa;
+  --text-on-accent: #ffffff;
 
-  --interactive-accent:       #7287fd;
-  --interactive-accent-hover: #5c6fd0;
+  --interactive-accent:       #7b6cd9;
+  --interactive-accent-hover: #6355c0;
 
-  --link-color:         #1e66f5;
-  --link-color-hover:   #04a5e5;
+  --link-color:       #7b6cd9;
+  --link-color-hover: #6355c0;
 
-  --font-interface:     ui-sans-serif, system-ui, sans-serif;
-  --font-text:          ui-sans-serif, system-ui, sans-serif;
-  --font-monospace:     ui-monospace, monospace;
-  --font-text-size:     16px;
+  --font-interface:  ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-text:       ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-monospace:  ui-monospace, "Cascadia Code", monospace;
+  --font-text-size:  16px;
 
-  --h1-color: #4c4f69;
-  --h2-color: #4c4f69;
-  --h3-color: #4c4f69;
-  --h4-color: #6c6f85;
-  --h5-color: #6c6f85;
-  --h6-color: #8c8fa1;
+  --h1-color: #2e2e2e;
+  --h2-color: #2e2e2e;
+  --h3-color: #2e2e2e;
+  --h4-color: #555555;
+  --h5-color: #555555;
+  --h6-color: #888888;
 
-  --bold-color:         #4c4f69;
-  --italic-color:       #4c4f69;
+  --bold-color:   #2e2e2e;
+  --italic-color: #2e2e2e;
 
-  --blockquote-border-color:      #7287fd;
-  --blockquote-background-color:  rgba(114,135,253,0.06);
-  --blockquote-color:             #4c4f69;
+  --blockquote-border-color:     #cccccc;
+  --blockquote-background-color: rgba(0,0,0,0.02);
+  --blockquote-color:            #555555;
 
-  --code-background: #e6e9ef;
-  --code-normal:     #40a02b;
+  --code-background: #f0f0f0;
+  --code-normal:     #3d7a3d;
 
-  --table-border-color:              #ccd0da;
-  --table-header-background:         #e6e9ef;
-  --table-row-background-hover:      rgba(0,0,0,0.03);
+  --table-border-color:         #dddddd;
+  --table-header-background:    #f5f5f5;
+  --table-row-background-hover: rgba(0,0,0,0.02);
 
-  --scrollbar-thumb-bg:   #ccd0da;
+  --scrollbar-thumb-bg: #cccccc;
 
   color-scheme: light;
 }
@@ -188,7 +186,6 @@ body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0;
 }
 
 /* ── Markdown preview area ────────────────────────────────── */
@@ -197,7 +194,6 @@ body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0;
 }
 
 .markdown-preview-sizer {
@@ -206,7 +202,7 @@ body {
   padding: 32px 24px 64px;
 }
 
-/* ── Nav header (sidebar top bar) ────────────────────────── */
+/* ── Nav header ───────────────────────────────────────────── */
 
 .nav-header {
   padding: 8px 6px 4px;
@@ -259,9 +255,7 @@ body {
 
 /* ── Search input ─────────────────────────────────────────── */
 
-.search-input-container {
-  flex: 1;
-}
+.search-input-container { flex: 1; }
 
 .search-input {
   width: 100%;
@@ -276,28 +270,22 @@ body {
   transition: border-color 0.15s;
 }
 
-.search-input:focus {
-  border-color: var(--interactive-accent);
-}
-
-.search-input::placeholder {
-  color: var(--text-faint);
-}
-
-/* Hide browser-native search clear button */
+.search-input:focus { border-color: var(--interactive-accent); }
+.search-input::placeholder { color: var(--text-faint); }
 .search-input::-webkit-search-cancel-button { display: none; }
 
-/* ── File tree items ──────────────────────────────────────── */
+/* ── File tree ────────────────────────────────────────────── */
 
-.tree-item {
-  position: relative;
-}
+.tree-item { position: relative; }
 
 .tree-item-self {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  padding-right: 8px;
+  /* padding-inline-start set per-item via style= for indentation */
   border-radius: 4px;
   font-size: 0.88rem;
   color: var(--text-normal);
@@ -309,14 +297,10 @@ body {
   user-select: none;
 }
 
-.tree-item-self:hover,
-.tree-item-self.is-clickable:hover {
-  background: var(--background-modifier-hover);
-}
+.tree-item-self:hover { background: var(--background-modifier-hover); }
 
 .tree-item-self.is-active {
   background: var(--background-modifier-hover);
-  color: var(--text-normal);
   font-weight: 500;
 }
 
@@ -342,21 +326,7 @@ body {
   transition: transform 0.15s;
 }
 
-.tree-item-icon.is-collapsed svg {
-  transform: rotate(-90deg);
-}
-
-.tree-item-children {
-  padding-left: 0;
-}
-
-.nav-file-title-content,
-.nav-folder-title-content {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.tree-item-icon.is-collapsed svg { transform: rotate(-90deg); }
 
 /* ── Scrollbars ───────────────────────────────────────────── */
 
@@ -366,6 +336,4 @@ body {
   background: var(--scrollbar-thumb-bg);
   border-radius: 3px;
 }
-.styled-scrollbars ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-faint);
-}
+.styled-scrollbars ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
