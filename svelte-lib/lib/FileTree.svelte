@@ -52,8 +52,7 @@
 	// ── Indentation ────────────────────────────────────────────────────────
 
 	function itemStyle(depth: number): string {
-		const indent = (depth - 1) * 17;
-		return `margin-inline-start: -${indent}px !important; padding-inline-start: ${8 + indent}px !important;`;
+		return `padding-inline-start: ${(depth - 1) * 17 + 8}px;`;
 	}
 </script>
 
