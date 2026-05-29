@@ -13,11 +13,11 @@ export function renderMarkdown(md: string): string {
 	while (i < lines.length) {
 		const line = lines[i];
 
-		if (/^\`\`\`/.test(line)) {
+		if (/^```/.test(line)) {
 			const lang = line.slice(3).trim();
 			const codeLines: string[] = [];
 			i++;
-			while (i < lines.length && !/^\`\`\`/.test(lines[i])) {
+			while (i < lines.length && !/^```/.test(lines[i])) {
 				codeLines.push(escapeHtml(lines[i]));
 				i++;
 			}
@@ -35,9 +35,9 @@ export function renderMarkdown(md: string): string {
 				bqLines.push(lines[i].replace(/^>\s?/, ""));
 				i++;
 			}
-			out.push(
-				`<blockquote>${renderMarkdown(bqLines.join("\n"))}</blockquote>`,
-			);
+			// Each > line is a visual line in Obsidian — preserve with <br>
+			const bqContent = bqLines.map((l) => inline(l)).join("<br>");
+			out.push(`<blockquote>${bqContent}</blockquote>`);
 			continue;
 		}
 
@@ -100,12 +100,22 @@ export function renderMarkdown(md: string): string {
 			continue;
 		}
 
+		// Raw HTML line emitted by processWikilinks (e.g. <img>, <a>, <div class="wiki-embed">)
+		// Pass it through untouched — do not run inline() on it.
+		if (/^<[a-zA-Z]/.test(line.trim())) {
+			out.push(line);
+			i++;
+			continue;
+		}
+
 		const paraLines: string[] = [];
 		while (
 			i < lines.length &&
 			lines[i].trim() !== "" &&
-			!/^[>#\`\|*\-+]/.test(lines[i]) &&
-			!/^\d+\./.test(lines[i])
+			!/^[>#`|]/.test(lines[i]) &&
+			!/^\s*[*\-+]\s/.test(lines[i]) &&
+			!/^\s*\d+\.\s/.test(lines[i]) &&
+			!/^#{1,6}\s/.test(lines[i])
 		) {
 			paraLines.push(lines[i]);
 			i++;
@@ -118,42 +128,48 @@ export function renderMarkdown(md: string): string {
 		}
 	}
 
-	const html = out.join("\n");
-	return restoreWikiPlaceholders(html);
+	return out.join("\n");
 }
 
-// ── Wiki placeholder decoder ───────────────────────────────────────────────
+// ── Inline renderer ────────────────────────────────────────────────────────
 
 /**
- * Decode WIKISTART<base64>WIKIEND tokens injected by processWikilinks()
- * in the plugin before the markdown was rendered.
- * Using placeholders prevents the inline() parser from mangling underscores,
- * asterisks, etc. inside note paths and link labels.
+ * Process inline markdown on a string that may already contain HTML tags
+ * (emitted by processWikilinks in the plugin).
+ *
+ * Strategy:
+ * 1. Stash existing HTML tags so markdown rules don't touch them
+ * 2. Apply markdown inline rules on plain text only
+ * 3. Restore stashed HTML tags
  */
-function restoreWikiPlaceholders(html: string): string {
-	return html.replace(
-		/WIKISTART([A-Za-z0-9+/=]+)WIKIEND/g,
-		(_, encoded: string) => {
-			try {
-				// base64 → binary string → percent-encoded → decoded UTF-8
-				return decodeURIComponent(
-					atob(encoded)
-						.split("")
-						.map(
-							(c) =>
-								"%" +
-								c.charCodeAt(0).toString(16).padStart(2, "0"),
-						)
-						.join(""),
-				);
-			} catch {
-				return "";
-			}
-		},
-	);
+function inline(text: string): string {
+	const stash: string[] = [];
+
+	// Stash complete HTML tags (self-closing and paired) and HTML entities
+	text = text.replace(/(<[^>]+>|&[a-zA-Z#0-9]+;)/g, (match) => {
+		stash.push(match);
+		return `STASH${stash.length - 1}END`;
+	});
+
+	// Apply markdown inline rules on the now tag-free text
+	text = text
+		.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1">')
+		.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+		.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+		.replace(/__([^_]+)__/g, "<strong>$1</strong>")
+		.replace(/\*([^*]+)\*/g, "<em>$1</em>")
+		.replace(/_([^_]+)_/g, "<em>$1</em>")
+		.replace(/`([^`]+)`/g, "<code>$1</code>")
+		.replace(/~~([^~]+)~~/g, "<del>$1</del>")
+		.replace(/  \n/g, "<br>");
+
+	// Restore stashed HTML
+	text = text.replace(/STASH(\d+)END/g, (_, idx) => stash[parseInt(idx)]);
+
+	return text;
 }
 
-// ── Inline helpers ─────────────────────────────────────────────────────────
+// ── Block helpers ──────────────────────────────────────────────────────────
 
 function renderList(lines: string[], ordered: boolean): string {
 	const tag = ordered ? "ol" : "ul";
@@ -187,19 +203,6 @@ function renderTable(lines: string[]): string {
 		)
 		.join("");
 	return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
-}
-
-function inline(text: string): string {
-	return text
-		.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1">')
-		.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
-		.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-		.replace(/__([^_]+)__/g, "<strong>$1</strong>")
-		.replace(/\*([^*]+)\*/g, "<em>$1</em>")
-		.replace(/_([^_]+)_/g, "<em>$1</em>")
-		.replace(/\`([^\`]+)\`/g, "<code>$1</code>")
-		.replace(/~~([^~]+)~~/g, "<del>$1</del>")
-		.replace(/  \n/g, "<br>");
 }
 
 function escapeHtml(str: string): string {

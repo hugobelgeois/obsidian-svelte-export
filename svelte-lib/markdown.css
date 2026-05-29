@@ -1,0 +1,282 @@
+/* ============================================================
+   markdown.css — Obsidian-faithful markdown rendering
+   Targets: .markdown-preview-view .markdown-rendered
+   and the generated .md-page / .md-content wrappers.
+   ============================================================ */
+
+/* ── Base typography ──────────────────────────────────────── */
+
+.markdown-preview-view {
+  font-family: var(--font-text, var(--font-interface, ui-sans-serif, system-ui, sans-serif));
+  font-size: var(--font-text-size, 16px);
+  line-height: var(--line-height-normal, 1.6);
+  color: var(--text-normal);
+  tab-size: 4;
+}
+
+.markdown-preview-sizer {
+  max-width: var(--file-line-width, 700px);
+  margin: 0 auto;
+  padding: var(--size-4-8, 32px) var(--size-4-6, 24px) var(--size-4-16, 64px);
+}
+
+/* ── Headings ─────────────────────────────────────────────── */
+
+.markdown-rendered h1,
+.markdown-rendered h2,
+.markdown-rendered h3,
+.markdown-rendered h4,
+.markdown-rendered h5,
+.markdown-rendered h6 {
+  font-family: var(--font-text, inherit);
+  font-weight: var(--heading-weight, 600);
+  line-height: var(--line-height-tight, 1.3);
+  color: var(--text-normal);
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+
+.markdown-rendered h1 { font-size: var(--h1-size, 2em);   color: var(--h1-color, var(--text-normal)); }
+.markdown-rendered h2 { font-size: var(--h2-size, 1.6em); color: var(--h2-color, var(--text-normal)); }
+.markdown-rendered h3 { font-size: var(--h3-size, 1.37em); color: var(--h3-color, var(--text-normal)); }
+.markdown-rendered h4 { font-size: var(--h4-size, 1.25em); color: var(--h4-color, var(--text-normal)); }
+.markdown-rendered h5 { font-size: var(--h5-size, 1.12em); color: var(--h5-color, var(--text-normal)); }
+.markdown-rendered h6 { font-size: var(--h6-size, 1em);   color: var(--h6-color, var(--text-muted)); }
+
+/* ── Paragraph & inline ──────────────────────────────────── */
+
+.markdown-rendered p {
+  margin-top: 0;
+  margin-bottom: var(--p-spacing, 1em);
+}
+
+.markdown-rendered strong { font-weight: 600; color: var(--bold-color, inherit); }
+.markdown-rendered em     { font-style: italic; color: var(--italic-color, inherit); }
+.markdown-rendered del    { text-decoration: line-through; color: var(--text-muted); }
+
+.markdown-rendered a {
+  color: var(--link-color, var(--interactive-accent));
+  text-decoration: var(--link-decoration, none);
+}
+.markdown-rendered a:hover {
+  color: var(--link-color-hover, var(--interactive-accent-hover));
+  text-decoration: underline;
+}
+
+/* Internal wiki links */
+.markdown-rendered a.internal-link {
+  color: var(--link-color, var(--interactive-accent));
+}
+.markdown-rendered a.wiki-link.wiki-unresolved,
+.markdown-rendered span.wiki-unresolved {
+  color: var(--text-muted);
+  border-bottom: 1px dashed var(--text-muted);
+}
+
+/* ── Horizontal rule ─────────────────────────────────────── */
+
+.markdown-rendered hr {
+  border: none;
+  border-top: 1px solid var(--hr-color, var(--background-modifier-border));
+  margin: 2em 0;
+}
+
+/* ── Lists ───────────────────────────────────────────────── */
+
+.markdown-rendered ul,
+.markdown-rendered ol {
+  padding-inline-start: var(--list-indent, 2em);
+  margin: 0.5em 0 1em;
+}
+
+.markdown-rendered li {
+  margin-bottom: 0.25em;
+  line-height: var(--line-height-normal, 1.6);
+}
+
+.markdown-rendered li > p { margin: 0; }
+
+.markdown-rendered ul { list-style-type: disc; }
+.markdown-rendered ul ul { list-style-type: circle; }
+.markdown-rendered ul ul ul { list-style-type: square; }
+
+/* Task list */
+.markdown-rendered li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-inline-start: calc(-1 * var(--list-indent, 2em));
+  padding-inline-start: var(--list-indent, 2em);
+}
+.markdown-rendered input[type="checkbox"] {
+  margin-inline-end: 0.5em;
+  vertical-align: middle;
+  accent-color: var(--interactive-accent);
+}
+
+/* ── Blockquote ──────────────────────────────────────────── */
+
+.markdown-rendered blockquote {
+  border-left: var(--blockquote-border-thickness, 3px) solid
+    var(--blockquote-border-color, var(--interactive-accent));
+  margin: 1em 0;
+  padding: 0.5em 1em;
+  background: var(--blockquote-background-color, var(--background-secondary));
+  border-radius: 0 4px 4px 0;
+  color: var(--blockquote-color, var(--text-normal));
+  font-style: var(--blockquote-font-style, normal);
+}
+
+.markdown-rendered blockquote > p:last-child { margin-bottom: 0; }
+
+/* ── Code ────────────────────────────────────────────────── */
+
+.markdown-rendered code {
+  font-family: var(--font-monospace, ui-monospace, monospace);
+  font-size: var(--code-size, 0.875em);
+  background: var(--code-background, var(--background-secondary));
+  color: var(--code-normal, var(--text-normal));
+  padding: 0.15em 0.35em;
+  border-radius: var(--radius-s, 3px);
+}
+
+.markdown-rendered pre {
+  font-family: var(--font-monospace, ui-monospace, monospace);
+  font-size: var(--code-size, 0.875em);
+  background: var(--code-background, var(--background-secondary));
+  color: var(--code-normal, var(--text-normal));
+  border-radius: var(--radius-m, 6px);
+  padding: 1em 1.25em;
+  overflow-x: auto;
+  margin: 1em 0;
+  line-height: 1.5;
+  border: 1px solid var(--background-modifier-border);
+}
+
+.markdown-rendered pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+  border-radius: 0;
+}
+
+/* ── Tables ──────────────────────────────────────────────── */
+
+.markdown-rendered table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  font-size: var(--table-font-size, inherit);
+  overflow: auto;
+  display: block;
+}
+
+.markdown-rendered th,
+.markdown-rendered td {
+  border: 1px solid var(--table-border-color, var(--background-modifier-border));
+  padding: var(--table-cell-vertical-padding, 0.4em)
+           var(--table-cell-horizontal-padding, 0.75em);
+  text-align: left;
+  vertical-align: top;
+  line-height: var(--line-height-normal, 1.6);
+}
+
+.markdown-rendered th {
+  background: var(--table-header-background, var(--background-secondary));
+  color: var(--table-header-color, var(--text-normal));
+  font-weight: 600;
+}
+
+.markdown-rendered tr:nth-child(even) td {
+  background: var(--table-row-even-background, transparent);
+}
+
+.markdown-rendered tr:hover td {
+  background: var(--table-row-background-hover, var(--background-secondary-alt, var(--background-modifier-hover)));
+}
+
+/* ── Images ──────────────────────────────────────────────── */
+
+.markdown-rendered img,
+.markdown-rendered .wiki-image {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1em auto;
+  border-radius: var(--radius-m, 6px);
+}
+
+/* ── Sections (generated by pageexporter) ────────────────── */
+
+.markdown-rendered section {
+  display: contents; /* sections are structural only, no visual box */
+}
+
+/* ── Embeds ──────────────────────────────────────────────── */
+
+.wiki-embed-block {
+  border-left: 3px solid var(--interactive-accent);
+  background: var(--background-secondary);
+  border-radius: 0 6px 6px 0;
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+}
+
+.wiki-embed-content {
+  font-size: 0.9em;
+  pointer-events: none;
+  user-select: none;
+}
+
+.wiki-embed-content h1:first-child,
+.wiki-embed-content h2:first-child,
+.wiki-embed-content h3:first-child { margin-top: 0; }
+
+/* ── Callouts (Obsidian > [!type]) ───────────────────────── */
+/* Obsidian callouts are blockquotes with a [!type] first line */
+
+.markdown-rendered .callout {
+  border-radius: var(--radius-m, 6px);
+  padding: 0.75em 1em;
+  margin: 1em 0;
+  border: 1px solid var(--callout-border-color, var(--background-modifier-border));
+  background: var(--callout-bg, var(--background-secondary));
+}
+
+.markdown-rendered .callout-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  font-weight: 600;
+  margin-bottom: 0.5em;
+  color: var(--callout-color, var(--text-normal));
+}
+
+/* ── Page header (md-page wrapper) ──────────────────────────*/
+
+.md-page {}
+
+.md-header {
+  margin-bottom: 2em;
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding-bottom: 1em;
+}
+
+.md-header h1 {
+  margin: 0 0 0.25em;
+  font-size: 2em;
+  font-weight: 700;
+}
+
+.md-header .description {
+  color: var(--text-muted);
+  margin: 0;
+  font-size: 0.95em;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────── */
+
+.markdown-preview-view::-webkit-scrollbar { width: 6px; }
+.markdown-preview-view::-webkit-scrollbar-track { background: transparent; }
+.markdown-preview-view::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-bg, var(--background-modifier-border));
+  border-radius: 3px;
+}

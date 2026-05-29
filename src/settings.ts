@@ -23,8 +23,25 @@ export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	openAfterExport: false,
 };
 
+const IMAGE_EXTENSIONS = new Set([
+	"png",
+	"jpg",
+	"jpeg",
+	"gif",
+	"webp",
+	"svg",
+	"avif",
+]);
+
+// SVG icons for the eye toggle
+const EYE_OPEN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_CLOSED_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
 export class SvelteExporterSettingTab extends PluginSettingTab {
 	plugin: SvelteExporterPlugin;
+
+	// Persist expanded state across re-renders: path → boolean
+	private expandedFolders = new Set<string>();
 
 	constructor(app: App, plugin: SvelteExporterPlugin) {
 		super(app, plugin);
@@ -147,15 +164,15 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		// ── File / folder selector ────────────────────────────────────────
 		containerEl.createEl("h3", { text: "Files to export" });
 		containerEl.createEl("p", {
-			text: "Export: include in the export. Hidden: exported but not shown in the file tree.",
+			text: "Select files and folders to export. Use the eye icon to hide items from the site's file tree while still exporting them.",
 			cls: "setting-item-description",
 		});
 
-		// Column headers — aligned above the two checkbox columns
+		// Column headers
 		const headerRow = containerEl.createDiv({ cls: "sve-header-row" });
 		headerRow.createSpan({ cls: "sve-header-spacer" });
 		headerRow.createSpan({ cls: "sve-col-label", text: "Export" });
-		headerRow.createSpan({ cls: "sve-col-label", text: "Hidden" });
+		headerRow.createSpan({ cls: "sve-col-label", text: "Visible" });
 
 		const treeContainer = containerEl.createDiv({
 			cls: "svelte-exporter-tree",
@@ -174,10 +191,16 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			return a.name.localeCompare(b.name);
 		});
 		for (const child of sorted) {
-			if (child instanceof TFolder)
+			if (child instanceof TFolder) {
 				this.renderFolderNode(container, child, depth);
-			else if (child instanceof TFile && child.extension === "md")
-				this.renderFileNode(container, child, depth);
+			} else if (child instanceof TFile) {
+				if (
+					child.extension === "md" ||
+					IMAGE_EXTENSIONS.has(child.extension)
+				) {
+					this.renderFileNode(container, child, depth);
+				}
+			}
 		}
 	}
 
@@ -189,12 +212,10 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		const row = container.createDiv({ cls: "svelte-exporter-row" });
 		row.style.paddingLeft = `${depth * 18}px`;
 
-		const arrow = row.createSpan({
-			cls: "svelte-exporter-arrow",
-			text: "▶",
-		});
+		const arrow = row.createSpan({ cls: "svelte-exporter-arrow" });
+		const isExpanded = this.expandedFolders.has(folder.path);
+		arrow.textContent = isExpanded ? "▼" : "▶";
 
-		// Label first so checkboxes stay on the right
 		const labelWrap = row.createSpan({ cls: "svelte-exporter-label" });
 		labelWrap.createSpan({
 			cls: "svelte-exporter-folder-label",
@@ -213,58 +234,78 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		exportCb.indeterminate =
 			!exportCb.checked && this.hasPartialSelection(folder);
 
-		// Hidden checkbox
-		const hiddenCb = row.createEl("input", {
-			type: "checkbox",
-		}) as HTMLInputElement;
-		hiddenCb.title = "Hidden";
-		hiddenCb.className = "sve-cb";
-		hiddenCb.checked = this.plugin.settings.hiddenPaths.includes(
-			folder.path,
-		);
-		hiddenCb.indeterminate =
-			!hiddenCb.checked && this.hasPartialHidden(folder);
-		if (!exportCb.checked && !exportCb.indeterminate)
-			hiddenCb.disabled = true;
+		// Eye toggle button (visible = not hidden)
+		const eyeBtn = row.createEl("button", { cls: "sve-eye-btn" });
+		const isHidden = this.plugin.settings.hiddenPaths.includes(folder.path);
+		eyeBtn.innerHTML = isHidden ? EYE_CLOSED_SVG : EYE_OPEN_SVG;
+		eyeBtn.title = isHidden
+			? "Hidden from file tree"
+			: "Visible in file tree";
+		eyeBtn.classList.toggle("sve-eye-hidden", isHidden);
+		if (!exportCb.checked && !exportCb.indeterminate) {
+			eyeBtn.disabled = true;
+			eyeBtn.classList.add("sve-eye-disabled");
+		}
 
+		// Children container — respects expanded state
 		const childrenEl = container.createDiv({
 			cls: "svelte-exporter-children",
 		});
-		childrenEl.style.display = "none";
+		childrenEl.style.display = isExpanded ? "block" : "none";
 		this.renderTree(childrenEl, folder, depth + 1);
 
-		let expanded = false;
 		const toggleExpand = () => {
-			expanded = !expanded;
-			childrenEl.style.display = expanded ? "block" : "none";
-			arrow.textContent = expanded ? "▼" : "▶";
+			if (this.expandedFolders.has(folder.path)) {
+				this.expandedFolders.delete(folder.path);
+				childrenEl.style.display = "none";
+				arrow.textContent = "▶";
+			} else {
+				this.expandedFolders.add(folder.path);
+				childrenEl.style.display = "block";
+				arrow.textContent = "▼";
+			}
 		};
 		arrow.addEventListener("click", toggleExpand);
 		labelWrap.addEventListener("click", toggleExpand);
 
 		exportCb.addEventListener("change", async () => {
 			if (exportCb.checked) {
+				// Select folder AND all descendants explicitly
 				this.selectPath(folder.path);
-				this.deselectDescendants(folder);
+				this.selectAllDescendants(folder);
 			} else {
 				this.deselectPath(folder.path);
+				this.deselectAllDescendants(folder);
 				this.deselectHiddenPath(folder.path);
 				this.deselectHiddenDescendants(folder);
 			}
-			hiddenCb.disabled = !exportCb.checked && !exportCb.indeterminate;
 			await this.plugin.saveSettings();
-			this.display();
+			// Re-render only the children area to avoid collapsing folders
+			childrenEl.empty();
+			this.renderTree(childrenEl, folder, depth + 1);
+			// Update eye button state
+			const nowExported = exportCb.checked;
+			eyeBtn.disabled = !nowExported;
+			eyeBtn.classList.toggle("sve-eye-disabled", !nowExported);
 		});
 
-		hiddenCb.addEventListener("change", async () => {
-			if (hiddenCb.checked) {
+		eyeBtn.addEventListener("click", async () => {
+			const nowHidden = this.plugin.settings.hiddenPaths.includes(
+				folder.path,
+			);
+			if (nowHidden) {
+				this.deselectHiddenPath(folder.path);
+				eyeBtn.innerHTML = EYE_OPEN_SVG;
+				eyeBtn.title = "Visible in file tree";
+				eyeBtn.classList.remove("sve-eye-hidden");
+			} else {
 				this.selectHiddenPath(folder.path);
 				this.deselectHiddenDescendants(folder);
-			} else {
-				this.deselectHiddenPath(folder.path);
+				eyeBtn.innerHTML = EYE_CLOSED_SVG;
+				eyeBtn.title = "Hidden from file tree";
+				eyeBtn.classList.add("sve-eye-hidden");
 			}
 			await this.plugin.saveSettings();
-			this.display();
 		});
 	}
 
@@ -273,9 +314,11 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		row.style.paddingLeft = `${depth * 18 + 20}px`;
 
 		const labelWrap = row.createSpan({ cls: "svelte-exporter-label" });
+		const isImage = IMAGE_EXTENSIONS.has(file.extension);
+		const icon = isImage ? "🖼️" : "📄";
 		const isCached = !!this.plugin.settings.exportCache?.[file.path];
 		const span = labelWrap.createSpan({
-			text: isCached ? `📄 ${file.basename} ✓` : `📄 ${file.basename}`,
+			text: `${icon} ${file.basename}${isCached ? " ✓" : ""}`,
 		});
 		if (isCached) span.style.color = "var(--text-muted)";
 
@@ -291,17 +334,21 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			ancestorSelected;
 		exportCb.disabled = ancestorSelected;
 
-		// Hidden checkbox
-		const hiddenCb = row.createEl("input", {
-			type: "checkbox",
-		}) as HTMLInputElement;
-		hiddenCb.title = "Hidden";
-		hiddenCb.className = "sve-cb";
+		// Eye toggle button
+		const eyeBtn = row.createEl("button", { cls: "sve-eye-btn" });
 		const ancestorHidden = this.isAncestorHidden(file);
-		hiddenCb.checked =
+		const isHidden =
 			this.plugin.settings.hiddenPaths.includes(file.path) ||
 			ancestorHidden;
-		hiddenCb.disabled = ancestorHidden || !exportCb.checked;
+		eyeBtn.innerHTML = isHidden ? EYE_CLOSED_SVG : EYE_OPEN_SVG;
+		eyeBtn.title = isHidden
+			? "Hidden from file tree"
+			: "Visible in file tree";
+		eyeBtn.classList.toggle("sve-eye-hidden", isHidden);
+		if (ancestorHidden || !exportCb.checked) {
+			eyeBtn.disabled = true;
+			eyeBtn.classList.add("sve-eye-disabled");
+		}
 
 		exportCb.addEventListener("change", async () => {
 			if (exportCb.checked) this.selectPath(file.path);
@@ -309,16 +356,27 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				this.deselectPath(file.path);
 				this.deselectHiddenPath(file.path);
 			}
-			hiddenCb.disabled = !exportCb.checked;
+			eyeBtn.disabled = !exportCb.checked;
+			eyeBtn.classList.toggle("sve-eye-disabled", !exportCb.checked);
 			await this.plugin.saveSettings();
-			this.display();
 		});
 
-		hiddenCb.addEventListener("change", async () => {
-			if (hiddenCb.checked) this.selectHiddenPath(file.path);
-			else this.deselectHiddenPath(file.path);
+		eyeBtn.addEventListener("click", async () => {
+			const nowHidden = this.plugin.settings.hiddenPaths.includes(
+				file.path,
+			);
+			if (nowHidden) {
+				this.deselectHiddenPath(file.path);
+				eyeBtn.innerHTML = EYE_OPEN_SVG;
+				eyeBtn.title = "Visible in file tree";
+				eyeBtn.classList.remove("sve-eye-hidden");
+			} else {
+				this.selectHiddenPath(file.path);
+				eyeBtn.innerHTML = EYE_CLOSED_SVG;
+				eyeBtn.title = "Hidden from file tree";
+				eyeBtn.classList.add("sve-eye-hidden");
+			}
 			await this.plugin.saveSettings();
-			this.display();
 		});
 	}
 
@@ -332,13 +390,21 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		this.plugin.settings.selectedPaths =
 			this.plugin.settings.selectedPaths.filter((s) => s !== p);
 	}
-	private deselectDescendants(folder: TFolder) {
-		const prefix = folder.path === "/" ? "" : folder.path + "/";
-		this.plugin.settings.selectedPaths =
-			this.plugin.settings.selectedPaths.filter(
-				(p) => !p.startsWith(prefix),
-			);
+
+	/** Select ALL descendants (files + folders) so they show as checked. */
+	private selectAllDescendants(folder: TFolder) {
+		for (const child of folder.children) {
+			this.selectPath(child.path);
+			if (child instanceof TFolder) this.selectAllDescendants(child);
+		}
 	}
+	private deselectAllDescendants(folder: TFolder) {
+		for (const child of folder.children) {
+			this.deselectPath(child.path);
+			if (child instanceof TFolder) this.deselectAllDescendants(child);
+		}
+	}
+
 	private selectHiddenPath(p: string) {
 		if (!this.plugin.settings.hiddenPaths.includes(p))
 			this.plugin.settings.hiddenPaths.push(p);
@@ -354,6 +420,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				(p) => !p.startsWith(prefix),
 			);
 	}
+
 	private isAncestorSelected(item: TAbstractFile): boolean {
 		let parent = item.parent;
 		while (parent) {
@@ -378,12 +445,6 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			p.startsWith(prefix),
 		);
 	}
-	private hasPartialHidden(folder: TFolder): boolean {
-		const prefix = folder.path === "/" ? "" : folder.path + "/";
-		return this.plugin.settings.hiddenPaths.some((p) =>
-			p.startsWith(prefix),
-		);
-	}
 
 	// ── Inline styles ─────────────────────────────────────────────────────
 
@@ -392,11 +453,10 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		const style = root.createEl("style");
 		style.id = "svelte-exporter-style";
 		style.textContent = `
-      /* Header row above the tree */
       .sve-header-row {
         display: flex;
         align-items: center;
-        padding: 2px 8px 2px 0;
+        padding: 4px 8px 4px 0;
         font-size: 0.72rem;
         color: var(--text-muted);
         font-weight: 600;
@@ -406,12 +466,11 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
       }
       .sve-header-spacer { flex: 1; }
       .sve-col-label {
-        width: 44px;
+        width: 52px;
         text-align: center;
         flex-shrink: 0;
       }
 
-      /* Tree container */
       .svelte-exporter-tree {
         border: 1px solid var(--background-modifier-border);
         border-radius: 6px;
@@ -423,12 +482,10 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
         user-select: none;
       }
 
-      /* Each row: label takes available space, two checkboxes fixed width */
       .svelte-exporter-row {
         display: flex;
         align-items: center;
-        gap: 0;
-        padding: 3px 8px 3px 8px;
+        padding: 3px 8px;
         cursor: default;
         font-size: 0.9rem;
         color: var(--text-normal);
@@ -450,12 +507,12 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
       }
       .svelte-exporter-arrow:hover { color: var(--text-normal); }
 
-      /* Label stretches */
       .svelte-exporter-label {
         flex: 1;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        min-width: 0;
       }
       .svelte-exporter-folder-label {
         cursor: pointer;
@@ -463,20 +520,39 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
       }
       .svelte-exporter-folder-label:hover { color: var(--interactive-accent); }
 
-      /* Checkboxes: fixed 44px wide to match column headers */
+      /* Export checkbox */
       .sve-cb {
-        width: 44px;
+        width: 52px;
         flex-shrink: 0;
         cursor: pointer;
-        /* center the native checkbox within its column */
         margin: 0;
-        display: block;
-        text-align: center;
         accent-color: var(--interactive-accent);
       }
-      .sve-cb:disabled {
-        opacity: 0.35;
+      .sve-cb:disabled { opacity: 0.35; cursor: not-allowed; }
+
+      /* Eye button */
+      .sve-eye-btn {
+        width: 52px;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: none;
+        border: none;
+        padding: 2px;
+        cursor: pointer;
+        color: var(--interactive-accent);
+        border-radius: 4px;
+        transition: color 0.15s, background 0.15s;
+      }
+      .sve-eye-btn:hover { background: var(--background-modifier-hover); }
+      .sve-eye-btn.sve-eye-hidden {
+        color: var(--text-muted);
+      }
+      .sve-eye-btn.sve-eye-disabled {
+        opacity: 0.3;
         cursor: not-allowed;
+        pointer-events: none;
       }
     `;
 	}

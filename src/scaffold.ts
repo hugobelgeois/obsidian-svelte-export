@@ -68,7 +68,11 @@ export function ensureSvelteProject(
 	const layoutPath = path.join(destRoot, "src", "routes", "+layout.svelte");
 	if (fs.existsSync(layoutPath)) {
 		const existing = fs.readFileSync(layoutPath, "utf-8");
-		if (existing.includes("favicon") || !existing.includes("app-shell")) {
+		// Replace if it looks like the sv create boilerplate or is missing our marker
+		if (
+			existing.includes("favicon") ||
+			!existing.includes("markdown-rendered")
+		) {
 			fs.unlinkSync(layoutPath);
 		}
 	}

@@ -11,6 +11,16 @@ import {
 
 export type ExportCache = Record<string, number>;
 
+const IMAGE_EXTENSIONS = new Set([
+	"png",
+	"jpg",
+	"jpeg",
+	"gif",
+	"webp",
+	"svg",
+	"avif",
+]);
+
 export default class SvelteExporterPlugin extends Plugin {
 	settings: SvelteExporterSettings;
 
@@ -46,7 +56,7 @@ export default class SvelteExporterPlugin extends Plugin {
 
 		const files = this.resolveFiles(selectedPaths);
 		if (!files.length) {
-			new Notice("⚠️ No markdown files found in the selected paths.");
+			new Notice("⚠️ No exportable files found in the selected paths.");
 			return;
 		}
 
@@ -64,8 +74,6 @@ export default class SvelteExporterPlugin extends Plugin {
 		if (!ready) return;
 
 		// ── Write hidden.json ──────────────────────────────────────────────
-		// Resolves hiddenPaths to the actual route paths that will exist in
-		// the exported site, so the client-side FileTree can filter them.
 		const hiddenRoutes = this.resolveHiddenRoutes(
 			this.settings.hiddenPaths ?? [],
 		);
@@ -92,6 +100,10 @@ export default class SvelteExporterPlugin extends Plugin {
 			}
 		}
 
+		const staticDir = path.join(destinationPath, "static");
+		if (!fs.existsSync(staticDir))
+			fs.mkdirSync(staticDir, { recursive: true });
+
 		let exported = 0,
 			skipped = 0,
 			errors = 0;
@@ -106,7 +118,16 @@ export default class SvelteExporterPlugin extends Plugin {
 					skipped++;
 					continue;
 				}
-				await exportFile(file, destinationPath, this.app.vault);
+
+				if (IMAGE_EXTENSIONS.has(file.extension)) {
+					// Copy image to /static/ — served at root URL by SvelteKit
+					const srcPath = path.join(vaultPath, file.path);
+					const destPath = path.join(staticDir, file.name);
+					fs.copyFileSync(srcPath, destPath);
+				} else {
+					await exportFile(file, destinationPath, this.app.vault);
+				}
+
 				cache[file.path] = mtime;
 				exported++;
 			} catch (e) {
@@ -153,25 +174,35 @@ export default class SvelteExporterPlugin extends Plugin {
 		};
 		const walk = (folder: TFolder) => {
 			for (const child of folder.children) {
-				if (child instanceof TFile && child.extension === "md")
-					add(child);
-				else if (child instanceof TFolder) walk(child);
+				if (child instanceof TFile) {
+					if (
+						child.extension === "md" ||
+						IMAGE_EXTENSIONS.has(child.extension)
+					) {
+						add(child);
+					}
+				} else if (child instanceof TFolder) {
+					walk(child);
+				}
 			}
 		};
 
 		for (const p of selectedPaths) {
 			const node: TAbstractFile | null =
 				this.app.vault.getAbstractFileByPath(p);
-			if (node instanceof TFile && node.extension === "md") add(node);
-			else if (node instanceof TFolder) walk(node);
+			if (node instanceof TFile) {
+				if (
+					node.extension === "md" ||
+					IMAGE_EXTENSIONS.has(node.extension)
+				)
+					add(node);
+			} else if (node instanceof TFolder) {
+				walk(node);
+			}
 		}
 		return files;
 	}
 
-	/**
-	 * Convert vault hiddenPaths (e.g. "Folder/Note.md" or "Folder") into
-	 * the route paths used in the exported site (e.g. "/Folder/Note" or "/Folder").
-	 */
 	private resolveHiddenRoutes(hiddenPaths: string[]): string[] {
 		return hiddenPaths.map((p) => "/" + p.replace(/\.md$/, ""));
 	}

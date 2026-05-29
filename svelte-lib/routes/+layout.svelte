@@ -5,6 +5,7 @@
 	import type { Snippet } from "svelte";
 	import { onMount } from "svelte";
 	import "../app.css";
+	import "../markdown.css";
 
 	const { children }: { children: Snippet } = $props();
 
