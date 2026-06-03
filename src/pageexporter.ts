@@ -27,12 +27,17 @@ export async function exportFile(
 		wikilinkMap,
 	);
 
-	const outputDir = path.join(
-		destRoot,
-		"src",
-		"routes",
-		file.path.replace(/\.md$/, ""),
-	);
+	// Sanitize path segments — apostrophes and other special chars break
+	// Node ESM module resolution when SvelteKit imports the compiled route.
+	const sanitizedPath = file.path
+		.replace(/\.md$/, "")
+		.split("/")
+		.map((seg) =>
+			seg.replace(/['"]/g, "").replace(/[^a-zA-Z0-9_\-. ]/g, "_"),
+		)
+		.join("/");
+
+	const outputDir = path.join(destRoot, "src", "routes", sanitizedPath);
 
 	if (!fs.existsSync(outputDir)) {
 		fs.mkdirSync(outputDir, { recursive: true });
@@ -44,12 +49,22 @@ export async function exportFile(
 
 // ── Wikilink helpers ───────────────────────────────────────────────────────
 
+function sanitizeRoutePath(vaultPath: string): string {
+	return vaultPath
+		.replace(/\.md$/, "")
+		.split("/")
+		.map((seg) =>
+			seg.replace(/['"]/g, "").replace(/[^a-zA-Z0-9_\-. ]/g, "_"),
+		)
+		.join("/");
+}
+
 function buildWikilinkMap(vault: Vault): Map<string, string> {
 	const map = new Map<string, string>();
 	for (const file of vault.getMarkdownFiles()) {
 		map.set(
 			file.basename.toLowerCase(),
-			"/" + file.path.replace(/\.md$/, ""),
+			"/" + sanitizeRoutePath(file.path),
 		);
 	}
 	return map;
@@ -235,6 +250,44 @@ function parseIntoSections(body: string): Section[] {
 
 // ── Snippet generator ──────────────────────────────────────────────────────
 
+// Regex to find embed placeholders emitted by processWikilinks
+const EMBED_RE =
+	/<div class="wiki-embed" data-route="([^"]*)" data-fragment="([^"]*)"><\/div>/g;
+
+/**
+ * Split markdown on embed placeholders, returning alternating chunks of
+ * [markdown, EmbedBlock jsx, markdown, EmbedBlock jsx, ...]
+ */
+function splitEmbeds(md: string): string[] {
+	const parts: string[] = [];
+	let last = 0;
+	let m: RegExpExecArray | null;
+	EMBED_RE.lastIndex = 0;
+	while ((m = EMBED_RE.exec(md)) !== null) {
+		parts.push(md.slice(last, m.index));
+		const route = decodeURIComponent(m[1]);
+		const fragment = decodeURIComponent(m[2]);
+		parts.push(
+			`<EmbedBlock route={${JSON.stringify(route)}} fragment={${JSON.stringify(fragment)}} />`,
+		);
+		last = m.index + m[0].length;
+	}
+	parts.push(md.slice(last));
+	return parts;
+}
+
+/** Emit Svelte markup for markdown that may contain embed placeholders. */
+function emitMarkdown(md: string): string {
+	return splitEmbeds(md)
+		.map((part, i) => {
+			if (i % 2 === 1) return `\t${part}`; // EmbedBlock component
+			if (!part.trim()) return "";
+			return `\t{@html renderMarkdown(${JSON.stringify(part)})}`;
+		})
+		.filter(Boolean)
+		.join("\n");
+}
+
 /**
  * Recursively emit Svelte snippets for a section tree.
  * Each snippet renders its own markdown body + calls child snippets.
@@ -247,22 +300,17 @@ function emitSnippets(sections: Section[]): string[] {
 			.map((c) => `\t{@render ${c.snippetName}()}`)
 			.join("\n");
 
-		// The section's own markdown (no heading line — heading is emitted as real HTML)
-		const md = sec.lines.join("\n");
-		const mdJson = JSON.stringify(md);
+		const mdBody = emitMarkdown(sec.lines.join("\n"));
 
 		let body = "";
 		if (sec.level === 0) {
-			// Preamble: no heading wrapper
-			body = `\t{@html renderMarkdown(${mdJson})}\n${childCalls}`;
+			body = [mdBody, childCalls].filter(Boolean).join("\n");
 		} else {
 			const Tag = `h${sec.level}`;
-			body = `\t<section>\n\t\t<${Tag} id="${sec.id}">${sec.title}</${Tag}>\n\t\t{@html renderMarkdown(${mdJson})}\n${childCalls}\n\t</section>`;
+			body = `\t<section>\n\t\t<${Tag} id="${sec.id}">${sec.title}</${Tag}>\n${mdBody}\n${childCalls}\n\t</section>`;
 		}
 
 		out.push(`{#snippet ${sec.snippetName}()}\n${body}\n{/snippet}`);
-
-		// Recurse
 		out.push(...emitSnippets(sec.children));
 	}
 
@@ -314,8 +362,7 @@ function markdownToSvelte(
 		.join("\n");
 
 	const pageSvelte = `<script lang="ts">
-  import { onMount, onDestroy } from "svelte";
-  import { mount } from "svelte";
+  import { onDestroy } from "svelte";
   import { tocHeadings } from "$lib/stores";
   import { renderMarkdown } from "$lib/markdownRenderer";
   import LinkPreview from "$lib/LinkPreview.svelte";
@@ -323,23 +370,7 @@ function markdownToSvelte(
 
   tocHeadings.set(${JSON.stringify(allHeadings, null, 4).replace(/\n/g, "\n  ")});
 
-  let embeds: ReturnType<typeof mount>[] = [];
-
-  onMount(() => {
-    const containers = document.querySelectorAll<HTMLElement>(".wiki-embed[data-route]");
-    for (const container of containers) {
-      const route = decodeURIComponent(container.dataset.route ?? "");
-      const fragment = decodeURIComponent(container.dataset.fragment ?? "");
-      embeds.push(mount(EmbedBlock, { target: container, props: { route, fragment } }));
-    }
-  });
-
-  onDestroy(() => {
-    tocHeadings.set([]);
-    for (const instance of embeds) {
-      try { (instance as any).$destroy?.(); } catch { /* ignore */ }
-    }
-  });
+  onDestroy(() => tocHeadings.set([]));
 </script>
 
 <svelte:head>

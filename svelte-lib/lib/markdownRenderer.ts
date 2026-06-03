@@ -187,12 +187,15 @@ function renderList(lines: string[], ordered: boolean): string {
 }
 
 function renderTable(lines: string[]): string {
-	const rows = lines.map((l) =>
-		l
-			.replace(/^\|/, "")
-			.replace(/\|$/, "")
-			.split("|")
-			.map((c) => c.trim()),
+	const PIPE = "\x00PIPE\x00";
+	const rows = lines.map(
+		(l) =>
+			l
+				.replace(/\\\|/g, PIPE) // stash escaped \| before splitting
+				.replace(/^\|/, "")
+				.replace(/\|$/, "")
+				.split("|")
+				.map((c) => c.trim().replace(new RegExp(PIPE, "g"), "|")), // restore
 	);
 	if (rows.length < 2) return "";
 	const head = rows[0].map((c) => `<th>${inline(c)}</th>`).join("");

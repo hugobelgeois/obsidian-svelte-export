@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { browser } from "$app/environment";
 	import { onDestroy, onMount } from "svelte";
 
 	let visible = $state(false);
@@ -9,37 +10,29 @@
 	let error = $state(false);
 
 	const cache = new Map<string, string>();
-
 	let showTimer: ReturnType<typeof setTimeout> | null = null;
 	let hideTimer: ReturnType<typeof setTimeout> | null = null;
 	let panelEl: HTMLElement;
 
-	// ── Fetch ──────────────────────────────────────────────────────────────
-	// SvelteKit prerender produces a full HTML page at each route.
-	// We fetch the route directly as HTML and parse out .md-content.
-
-	async function fetchPreview(
-		route: string,
-		fragment: string,
-	): Promise<string> {
+	async function fetchPageHtml(route: string, fragment: string): Promise<string> {
+		if (!browser) throw new Error("SSR");
 		const cacheKey = route + (fragment ? "#" + fragment : "");
 		if (cache.has(cacheKey)) return cache.get(cacheKey)!;
 
-		// Fetch the actual rendered page HTML
 		const url = route.endsWith("/") ? route : route + "/";
 		const res = await fetch(url, { headers: { Accept: "text/html" } });
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		const text = await res.text();
 
-		// Parse and extract the .md-content div
 		const parser = new DOMParser();
 		const doc = parser.parseFromString(text, "text/html");
-		const content = doc.querySelector(".md-content");
-		if (!content) throw new Error("No .md-content found");
+		const content =
+			doc.querySelector(".markdown-rendered") ??
+			doc.querySelector("article");
+		if (!content) throw new Error("selector not found");
 
 		let pageHtml = content.innerHTML;
 
-		// If a fragment is given, extract only the section under that heading
 		if (fragment) {
 			const decoded = decodeURIComponent(fragment);
 			const heading = content.querySelector(`#${CSS.escape(decoded)}`);
@@ -48,11 +41,7 @@
 				const parts: string[] = [heading.outerHTML];
 				let sib = heading.nextElementSibling;
 				while (sib) {
-					if (
-						sib.tagName.match(/^H[1-6]$/) &&
-						parseInt(sib.tagName[1]) <= level
-					)
-						break;
+					if (sib.tagName.match(/^H[1-6]$/) && parseInt(sib.tagName[1]) <= level) break;
 					parts.push(sib.outerHTML);
 					sib = sib.nextElementSibling;
 				}
@@ -64,28 +53,21 @@
 		return pageHtml;
 	}
 
-	// ── Event handlers ─────────────────────────────────────────────────────
-
 	function onLinkEnter(e: MouseEvent) {
-		const link = (e.target as HTMLElement).closest<HTMLElement>(
-			"a.wiki-link[data-wiki-href]",
-		);
+		const link = (e.target as HTMLElement).closest<HTMLElement>("a[data-wiki-href]");
 		if (!link) return;
-
 		clearTimeout(hideTimer ?? undefined);
 		showTimer = setTimeout(async () => {
 			const route = link.dataset.wikiHref!;
 			const fragment = link.dataset.wikiFragment ?? "";
-
 			x = e.clientX + 16;
 			y = e.clientY + 16;
 			loading = true;
 			error = false;
 			visible = true;
 			html = "";
-
 			try {
-				html = await fetchPreview(route, fragment);
+				html = await fetchPageHtml(route, fragment);
 			} catch {
 				error = true;
 			} finally {
@@ -96,42 +78,32 @@
 
 	function onLinkLeave() {
 		clearTimeout(showTimer ?? undefined);
-		hideTimer = setTimeout(() => {
-			visible = false;
-		}, 150);
+		hideTimer = setTimeout(() => { visible = false; }, 150);
 	}
 
-	function onPanelEnter() {
-		clearTimeout(hideTimer ?? undefined);
-	}
-	function onPanelLeave() {
-		hideTimer = setTimeout(() => {
-			visible = false;
-		}, 150);
-	}
+	function onPanelEnter() { clearTimeout(hideTimer ?? undefined); }
+	function onPanelLeave() { hideTimer = setTimeout(() => { visible = false; }, 150); }
 
 	function onMouseMove(e: MouseEvent) {
-		if (!visible) return;
+		if (!visible || !panelEl) return;
 		x = e.clientX + 16;
 		y = e.clientY + 16;
-		// Clamp so panel doesn't go off screen
-		if (!panelEl) return;
 		const vw = window.innerWidth;
 		const vh = window.innerHeight;
-		if (x + panelEl.offsetWidth > vw - 8)
-			x = e.clientX - panelEl.offsetWidth - 8;
-		if (y + panelEl.offsetHeight > vh - 8)
-			y = e.clientY - panelEl.offsetHeight - 8;
+		if (x + panelEl.offsetWidth  > vw - 8) x = e.clientX - panelEl.offsetWidth  - 8;
+		if (y + panelEl.offsetHeight > vh - 8) y = e.clientY - panelEl.offsetHeight - 8;
 	}
 
 	onMount(() => {
 		document.addEventListener("mouseover", onLinkEnter);
-		document.addEventListener("mouseout", onLinkLeave);
+		document.addEventListener("mouseout",  onLinkLeave);
 		document.addEventListener("mousemove", onMouseMove);
 	});
+
 	onDestroy(() => {
+		if (!browser) return;
 		document.removeEventListener("mouseover", onLinkEnter);
-		document.removeEventListener("mouseout", onLinkLeave);
+		document.removeEventListener("mouseout",  onLinkLeave);
 		document.removeEventListener("mousemove", onMouseMove);
 		clearTimeout(showTimer ?? undefined);
 		clearTimeout(hideTimer ?? undefined);
@@ -152,7 +124,7 @@
 		{:else if error}
 			<div class="wiki-preview-status">Preview unavailable</div>
 		{:else}
-			<div class="wiki-preview-content md-content">
+			<div class="wiki-preview-content markdown-rendered">
 				{@html html}
 			</div>
 		{/if}
@@ -175,32 +147,20 @@
 		animation: wiki-fade-in 0.12s ease;
 	}
 	@keyframes wiki-fade-in {
-		from {
-			opacity: 0;
-			transform: translateY(4px);
-		}
-		to {
-			opacity: 1;
-			transform: translateY(0);
-		}
+		from { opacity: 0; transform: translateY(4px); }
+		to   { opacity: 1; transform: translateY(0); }
 	}
 	.wiki-preview-content {
 		overflow: hidden;
 		max-height: 288px;
 		font-size: 0.85rem;
 		line-height: 1.5;
-		-webkit-mask-image: linear-gradient(
-			to bottom,
-			black 70%,
-			transparent 100%
-		);
+		-webkit-mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
 		mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
 	}
 	.wiki-preview-content :global(h1:first-child),
 	.wiki-preview-content :global(h2:first-child),
-	.wiki-preview-content :global(h3:first-child) {
-		margin-top: 0;
-	}
+	.wiki-preview-content :global(h3:first-child) { margin-top: 0; }
 	.wiki-preview-status {
 		color: var(--text-muted);
 		font-size: 0.85rem;

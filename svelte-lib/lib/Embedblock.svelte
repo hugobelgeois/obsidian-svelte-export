@@ -1,9 +1,10 @@
 <script lang="ts">
+	import { browser } from "$app/environment";
 	import { onMount } from "svelte";
 
 	interface Props {
-		route: string; // decoded route path, e.g. "/Folder/Note"
-		fragment: string; // decoded fragment, e.g. "Section Title", or ""
+		route: string; // e.g. "/Folder/Note"
+		fragment: string; // e.g. "section-title", or ""
 	}
 
 	const { route, fragment }: Props = $props();
@@ -12,33 +13,27 @@
 	let loading = $state(true);
 	let error = $state(false);
 
-	// ── Fetch ──────────────────────────────────────────────────────────────
-
 	onMount(async () => {
+		if (!browser) return;
 		try {
-			const dataUrl = route.replace(/\/?$/, "/") + "__data.json";
-			const res = await fetch(dataUrl);
+			const url = route.endsWith("/") ? route : route + "/";
+			const res = await fetch(url, { headers: { Accept: "text/html" } });
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
-			const json = await res.json();
+			const text = await res.text();
 
-			let pageHtml = "";
-			for (const node of json.nodes ?? []) {
-				if (!node?.data) continue;
-				const htmlEntry = node.data.find?.(
-					(v: unknown) => typeof v === "string" && v.startsWith("<"),
-				);
-				if (htmlEntry) {
-					pageHtml = htmlEntry;
-					break;
-				}
-			}
+			const parser = new DOMParser();
+			const doc = parser.parseFromString(text, "text/html");
 
-			if (!pageHtml) throw new Error("No HTML in page data");
+			const content = doc.querySelector(".markdown-rendered");
+			if (!content) throw new Error("No .markdown-rendered found");
+
+			let pageHtml = content.innerHTML;
 
 			if (fragment) {
-				const tmp = document.createElement("div");
-				tmp.innerHTML = pageHtml;
-				const heading = tmp.querySelector(`#${CSS.escape(fragment)}`);
+				const decoded = decodeURIComponent(fragment);
+				const heading = content.querySelector(
+					`#${CSS.escape(decoded)}`,
+				);
 				if (heading) {
 					const level = parseInt(heading.tagName[1]);
 					const parts: string[] = [heading.outerHTML];
@@ -67,15 +62,15 @@
 
 <div class="wiki-embed-block">
 	{#if loading}
-		<div class="wiki-embed-loading">Loading…</div>
+		<div class="wiki-embed-status">Loading…</div>
 	{:else if error}
-		<div class="wiki-embed-error">Embed unavailable</div>
+		<div class="wiki-embed-status">Embed unavailable</div>
 	{:else}
 		<!--
 			inert makes the entire subtree non-interactive:
 			no clicks, no tab focus, no links — exactly what ![[]] should be.
 		-->
-		<div class="wiki-embed-content md-content" inert>
+		<div class="wiki-embed-content markdown-rendered" inert>
 			{@html html}
 		</div>
 	{/if}
@@ -93,20 +88,17 @@
 	.wiki-embed-content {
 		font-size: 0.9rem;
 		line-height: 1.6;
-		/* Prevent any pointer interaction even without inert support */
 		pointer-events: none;
 		user-select: none;
 	}
 
-	/* Suppress top margin on first heading */
 	.wiki-embed-content :global(h1:first-child),
 	.wiki-embed-content :global(h2:first-child),
 	.wiki-embed-content :global(h3:first-child) {
 		margin-top: 0;
 	}
 
-	.wiki-embed-loading,
-	.wiki-embed-error {
+	.wiki-embed-status {
 		color: var(--text-muted);
 		font-size: 0.85rem;
 		font-style: italic;
