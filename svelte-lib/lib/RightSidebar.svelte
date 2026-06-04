@@ -13,7 +13,7 @@
 
 <div
 	class="workspace-split mod-horizontal mod-sidedock mod-right-split"
-	style="min-width: 200px; width: 200px;"
+	style="min-width:200px;width:200px;"
 >
 	<div
 		class="workspace-tabs mod-top mod-top-right-space"
@@ -24,22 +24,17 @@
 				<div class="workspace-leaf-content" data-type="outline">
 					<div class="nav-header">
 						<div class="nav-buttons-container">
-							<div
+							<button
 								class="clickable-icon nav-action-button"
-								role="button"
-								tabindex="0"
 								aria-label={collapsed
 									? "Expand sidebar"
 									: "Collapse sidebar"}
 								onclick={() => (collapsed = !collapsed)}
-								onkeydown={(e) =>
-									e.key === "Enter" &&
-									(collapsed = !collapsed)}
 							>
 								<svg
 									xmlns="http://www.w3.org/2000/svg"
-									width="24"
-									height="24"
+									width="16"
+									height="16"
 									viewBox="0 0 24 24"
 									fill="none"
 									stroke="currentColor"
@@ -54,21 +49,18 @@
 										<path d="M9 18l6-6-6-6" />
 									{/if}
 								</svg>
-							</div>
-							<div
+							</button>
+							<button
 								class="clickable-icon nav-action-button"
-								role="button"
-								tabindex="0"
 								aria-label="Toggle light/dark mode"
 								onclick={toggleTheme}
-								onkeydown={(e) =>
-									e.key === "Enter" && toggleTheme()}
 							>
 								{#if theme === "dark"}
+									<!-- Sun -->
 									<svg
 										xmlns="http://www.w3.org/2000/svg"
-										width="24"
-										height="24"
+										width="16"
+										height="16"
 										viewBox="0 0 24 24"
 										fill="none"
 										stroke="currentColor"
@@ -83,10 +75,11 @@
 										/>
 									</svg>
 								{:else}
+									<!-- Moon -->
 									<svg
 										xmlns="http://www.w3.org/2000/svg"
-										width="24"
-										height="24"
+										width="16"
+										height="16"
 										viewBox="0 0 24 24"
 										fill="none"
 										stroke="currentColor"
@@ -100,7 +93,7 @@
 										/>
 									</svg>
 								{/if}
-							</div>
+							</button>
 						</div>
 					</div>
 					{#if !collapsed}

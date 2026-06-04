@@ -4,11 +4,15 @@
 
 	let collapsed = $state(false);
 	let query = $state("");
+
+	function toggleCollapse() {
+		collapsed = !collapsed;
+	}
 </script>
 
 <div
 	class="workspace-split mod-horizontal mod-sidedock mod-left-split"
-	style="min-width: 200px; width: 200px;"
+	style="min-width:200px;width:200px;"
 >
 	<div
 		class="workspace-tabs mod-top mod-top-left-space"
@@ -27,51 +31,43 @@
 									class="search-input"
 								/>
 							</div>
-							<div
+							<button
 								class="clickable-icon nav-action-button"
-								role="button"
-								tabindex="0"
 								aria-label={collapsed
 									? "Expand sidebar"
 									: "Collapse sidebar"}
-								onclick={() => (collapsed = !collapsed)}
-								onkeydown={(e) =>
-									e.key === "Enter" &&
-									(collapsed = !collapsed)}
+								onclick={toggleCollapse}
 							>
 								<svg
 									xmlns="http://www.w3.org/2000/svg"
-									width="24"
-									height="24"
+									width="16"
+									height="16"
 									viewBox="0 0 24 24"
 									fill="none"
 									stroke="currentColor"
 									stroke-width="2"
 									stroke-linecap="round"
 									stroke-linejoin="round"
-									class="svg-icon lucide-chevrons-down-up"
+									class="svg-icon"
 								>
 									{#if collapsed}
-										<path d="M3 8L12 17L21 8"></path>
+										<path d="M3 8L12 17L21 8" />
 									{:else}
-										<path d="m7 20 5-5 5 5"></path>
-										<path d="m7 4 5 5 5-5"></path>
+										<path d="m7 20 5-5 5 5" />
+										<path d="m7 4 5 5 5-5" />
 									{/if}
 								</svg>
-							</div>
+							</button>
 						</div>
 					</div>
-					<div
-						class="nav-files-container node-insert-event"
-						style="position: relative;"
-					>
-						{#if !collapsed}
+					{#if !collapsed}
+						<div class="nav-files-container node-insert-event">
 							<FileTree
 								{query}
 								currentPath={$page.url.pathname}
 							/>
-						{/if}
-					</div>
+						</div>
+					{/if}
 				</div>
 			</div>
 		</div>

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Snippet } from 'svelte';
+	import type { Snippet } from "svelte";
 	const { children }: { children: Snippet } = $props();
 </script>
 
@@ -9,7 +9,7 @@
 			<div class="workspace-leaf">
 				<div class="workspace-leaf-content" data-type="markdown">
 					<div class="view-content">
-						<div class="markdown-preview-view markdown-rendered">
+						<div class="markdown-preview-view">
 							<div class="markdown-preview-sizer">
 								{@render children()}
 							</div>

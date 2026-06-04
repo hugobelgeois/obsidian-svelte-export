@@ -4,6 +4,10 @@
 
 	let active = $state("");
 
+	function scrollTo(id: string) {
+		document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+	}
+
 	onMount(() => {
 		const observer = new IntersectionObserver(
 			(entries) => {
@@ -37,23 +41,14 @@
 				<div
 					class="tree-item-self is-clickable"
 					class:is-active={active === h.id}
-					style="margin-inline-start: 0px !important; padding-inline-start: {8 +
-						(h.level - 1) * 16}px !important;"
+					style="padding-inline-start: {8 + (h.level - 1) * 16}px;"
 					role="link"
 					tabindex="0"
-					onclick={() =>
-						document
-							.getElementById(h.id)
-							?.scrollIntoView({ behavior: "smooth" })}
-					onkeydown={(e) =>
-						e.key === "Enter" &&
-						document
-							.getElementById(h.id)
-							?.scrollIntoView({ behavior: "smooth" })}
+					onclick={() => scrollTo(h.id)}
+					onkeydown={(e) => e.key === "Enter" && scrollTo(h.id)}
 				>
 					<div class="tree-item-inner">{h.text}</div>
 				</div>
-				<div class="tree-item-children" style="min-height: 0px;"></div>
 			</div>
 		{/each}
 	</div>
