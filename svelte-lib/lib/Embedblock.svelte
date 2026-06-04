@@ -3,8 +3,8 @@
 	import { onMount } from "svelte";
 
 	interface Props {
-		route: string; // e.g. "/Folder/Note"
-		fragment: string; // e.g. "section-title", or ""
+		route: string;
+		fragment: string;
 	}
 
 	const { route, fragment }: Props = $props();
@@ -26,6 +26,14 @@
 
 			const content = doc.querySelector(".markdown-rendered");
 			if (!content) throw new Error("No .markdown-rendered found");
+
+			// Fix image URLs to absolute so they load correctly
+			content.querySelectorAll<HTMLImageElement>("img").forEach((img) => {
+				const src = img.getAttribute("src");
+				if (src && src.startsWith("/")) {
+					img.setAttribute("src", window.location.origin + src);
+				}
+			});
 
 			let pageHtml = content.innerHTML;
 
@@ -66,10 +74,6 @@
 	{:else if error}
 		<div class="wiki-embed-status">Embed unavailable</div>
 	{:else}
-		<!--
-			inert makes the entire subtree non-interactive:
-			no clicks, no tab focus, no links — exactly what ![[]] should be.
-		-->
 		<div class="wiki-embed-content markdown-rendered" inert>
 			{@html html}
 		</div>
@@ -96,6 +100,14 @@
 	.wiki-embed-content :global(h2:first-child),
 	.wiki-embed-content :global(h3:first-child) {
 		margin-top: 0;
+	}
+
+	.wiki-embed-content :global(img) {
+		max-width: 100%;
+		height: auto;
+		border-radius: 4px;
+		display: block;
+		margin: 0.5em auto;
 	}
 
 	.wiki-embed-status {
