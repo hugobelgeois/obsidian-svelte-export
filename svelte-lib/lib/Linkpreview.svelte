@@ -52,7 +52,19 @@
 
 		if (fragment) {
 			const decoded = decodeURIComponent(fragment);
-			const heading = content.querySelector(`#${CSS.escape(decoded)}`);
+			const slug = decoded
+				.toLowerCase()
+				.replace(/\s+/g, "-")
+				.replace(/[^\w-]/g, "");
+			const heading =
+				content.querySelector(`#${CSS.escape(slug)}`) ??
+				[...content.querySelectorAll("h1,h2,h3,h4,h5,h6")].find(
+					(el) =>
+						el.id.toLowerCase() === slug.toLowerCase() ||
+						el.textContent?.trim().toLowerCase() ===
+							decoded.toLowerCase(),
+				) ??
+				null;
 			if (heading) {
 				const level = parseInt(heading.tagName[1]);
 				const parts: string[] = [heading.outerHTML];

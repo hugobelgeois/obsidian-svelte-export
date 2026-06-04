@@ -27,7 +27,7 @@
 			const content = doc.querySelector(".markdown-rendered");
 			if (!content) throw new Error("No .markdown-rendered found");
 
-			// Fix image URLs to absolute so they load correctly
+			// Fix image URLs
 			content.querySelectorAll<HTMLImageElement>("img").forEach((img) => {
 				const src = img.getAttribute("src");
 				if (src && src.startsWith("/")) {
@@ -39,9 +39,25 @@
 
 			if (fragment) {
 				const decoded = decodeURIComponent(fragment);
-				const heading = content.querySelector(
-					`#${CSS.escape(decoded)}`,
-				);
+				// Slugify the fragment the same way pageexporter does, then
+				// also try a case-insensitive search as fallback
+				const slug = decoded
+					.toLowerCase()
+					.replace(/\s+/g, "-")
+					.replace(/[^\w-]/g, "");
+
+				// Try exact slug match first, then case-insensitive attribute search
+				let heading =
+					content.querySelector(`#${CSS.escape(slug)}`) ??
+					content.querySelector(`[id="${slug}"]`) ??
+					[...content.querySelectorAll("h1,h2,h3,h4,h5,h6")].find(
+						(el) =>
+							el.id.toLowerCase() === slug.toLowerCase() ||
+							el.textContent?.trim().toLowerCase() ===
+								decoded.toLowerCase(),
+					) ??
+					null;
+
 				if (heading) {
 					const level = parseInt(heading.tagName[1]);
 					const parts: string[] = [heading.outerHTML];
@@ -74,7 +90,12 @@
 	{:else if error}
 		<div class="wiki-embed-status">Embed unavailable</div>
 	{:else}
-		<div class="wiki-embed-content markdown-rendered" inert>
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="wiki-embed-content markdown-rendered"
+			onclick={(e) => e.preventDefault()}
+			onkeydown={(e) => e.preventDefault()}
+		>
 			{@html html}
 		</div>
 	{/if}

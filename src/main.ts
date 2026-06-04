@@ -90,6 +90,39 @@ export default class SvelteExporterPlugin extends Plugin {
 			"utf-8",
 		);
 
+		// ── Write nameMap.json ────────────────────────────────────────────────
+		// Maps sanitized route path → original display name, so the FileTree
+		// can show "Léoric" instead of "L_oric".
+		const nameMap: Record<string, string> = {};
+		for (const file of this.resolveFiles(
+			this.settings.selectedPaths ?? [],
+		)) {
+			if (file.extension !== "md") continue;
+			const sanitized =
+				"/" +
+				file.path
+					.replace(/\.md$/, "")
+					.split("/")
+					.map((seg: string) =>
+						seg
+							.replace(/['"]/g, "")
+							.replace(/[^a-zA-Z0-9_\-. ]/g, "_"),
+					)
+					.join("/");
+			nameMap[sanitized] = file.basename;
+		}
+		const nameMapPath = path.join(
+			destinationPath,
+			"src",
+			"lib",
+			"nameMap.json",
+		);
+		fs.writeFileSync(
+			nameMapPath,
+			JSON.stringify(nameMap, null, 2),
+			"utf-8",
+		);
+
 		// ── Export cache ───────────────────────────────────────────────────
 		const cacheFile = path.join(destinationPath, ".export-cache.json");
 		let cache: ExportCache = {};
