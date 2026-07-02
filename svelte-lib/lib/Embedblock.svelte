@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { browser } from "$app/environment";
 	import { onMount } from "svelte";
+	import { fetchWikiHtml } from "$lib/wikiFetch";
 
 	interface Props {
 		route: string;
@@ -16,66 +17,7 @@
 	onMount(async () => {
 		if (!browser) return;
 		try {
-			const url = route.endsWith("/") ? route : route + "/";
-			const res = await fetch(url, { headers: { Accept: "text/html" } });
-			if (!res.ok) throw new Error(`HTTP ${res.status}`);
-			const text = await res.text();
-
-			const parser = new DOMParser();
-			const doc = parser.parseFromString(text, "text/html");
-
-			const content = doc.querySelector(".markdown-rendered");
-			if (!content) throw new Error("No .markdown-rendered found");
-
-			// Fix image URLs
-			content.querySelectorAll<HTMLImageElement>("img").forEach((img) => {
-				const src = img.getAttribute("src");
-				if (src && src.startsWith("/")) {
-					img.setAttribute("src", window.location.origin + src);
-				}
-			});
-
-			let pageHtml = content.innerHTML;
-
-			if (fragment) {
-				const decoded = decodeURIComponent(fragment);
-				// Slugify the fragment the same way pageexporter does, then
-				// also try a case-insensitive search as fallback
-				const slug = decoded
-					.toLowerCase()
-					.replace(/\s+/g, "-")
-					.replace(/[^\w-]/g, "");
-
-				// Try exact slug match first, then case-insensitive attribute search
-				let heading =
-					content.querySelector(`#${CSS.escape(slug)}`) ??
-					content.querySelector(`[id="${slug}"]`) ??
-					[...content.querySelectorAll("h1,h2,h3,h4,h5,h6")].find(
-						(el) =>
-							el.id.toLowerCase() === slug.toLowerCase() ||
-							el.textContent?.trim().toLowerCase() ===
-								decoded.toLowerCase(),
-					) ??
-					null;
-
-				if (heading) {
-					const level = parseInt(heading.tagName[1]);
-					const parts: string[] = [heading.outerHTML];
-					let sib = heading.nextElementSibling;
-					while (sib) {
-						if (
-							sib.tagName.match(/^H[1-6]$/) &&
-							parseInt(sib.tagName[1]) <= level
-						)
-							break;
-						parts.push(sib.outerHTML);
-						sib = sib.nextElementSibling;
-					}
-					pageHtml = parts.join("");
-				}
-			}
-
-			html = pageHtml;
+			html = await fetchWikiHtml(route, fragment);
 		} catch {
 			error = true;
 		} finally {

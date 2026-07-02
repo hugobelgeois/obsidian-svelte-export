@@ -1,0 +1,221 @@
+/* ============================================================
+   layout.css — Reset + Obsidian-style layout shell + icon sizing.
+   Always shipped by scaffold.ts's copyPluginFiles and imported
+   LAST in +layout.svelte, so it keeps the app usable and correctly
+   sized no matter which (if any) Obsidian theme app.css was
+   replaced with. This is the single source of truth for these
+   rules — do not duplicate them elsewhere.
+   ============================================================ */
+
+/* ── Reset ────────────────────────────────────────────────── */
+
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; overflow: hidden; }
+a { text-decoration: none; color: inherit; }
+
+/* ── Layout shell ─────────────────────────────────────────── */
+
+.app-container,
+.horizontal-main-container {
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace {
+  display: flex;
+  flex-direction: row;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.workspace-split.mod-sidedock {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.2s ease, min-width 0.2s ease;
+  background: var(--background-secondary);
+  border-right: 1px solid var(--background-modifier-border);
+}
+
+.workspace-split.mod-right-split {
+  border-right: none;
+  border-left: 1px solid var(--background-modifier-border);
+}
+
+.workspace-tabs.is-collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  overflow: hidden;
+}
+
+.workspace-split.mod-root {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--background-primary);
+}
+
+/* workspace-tabs / workspace-tab-container / workspace-leaf / workspace-leaf-content
+   share this single rule on purpose: components combine these classes onto as
+   few actual DOM nodes as possible instead of nesting one <div> per class. */
+.workspace-tabs,
+.workspace-tab-container,
+.workspace-leaf,
+.workspace-leaf-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+.view-content,
+.markdown-preview-view {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ── Nav header ───────────────────────────────────────────── */
+
+.nav-header {
+  padding: 8px 6px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+}
+
+.nav-buttons-container {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.nav-files-container {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 0;
+}
+
+/* ── Clickable icons ──────────────────────────────────────── */
+
+.clickable-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.clickable-icon:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.svg-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* Ensure SVG icons don't inherit an Obsidian theme's oversized dimensions */
+.nav-header .svg-icon,
+.clickable-icon .svg-icon { width: 16px !important; height: 16px !important; }
+.tree-item-icon .svg-icon { width: 14px !important; height: 14px !important; }
+
+/* ── Search input ─────────────────────────────────────────── */
+
+.search-input-container { flex: 1; }
+
+.search-input {
+  width: 100%;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  font-size: 0.85rem;
+  padding: 4px 8px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.search-input:focus { border-color: var(--interactive-accent); }
+.search-input::placeholder { color: var(--text-faint); }
+.search-input::-webkit-search-cancel-button { display: none; }
+
+/* ── File tree ────────────────────────────────────────────── */
+
+.tree-item { position: relative; }
+
+.tree-item-self {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  padding-right: 8px;
+  /* padding-inline-start set per-item via style= for indentation */
+  border-radius: 4px;
+  font-size: 0.88rem;
+  color: var(--text-normal);
+  cursor: pointer;
+  transition: background 0.1s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+
+.tree-item-self:hover { background: var(--background-modifier-hover); }
+
+.tree-item-self.is-active {
+  background: var(--background-modifier-hover);
+  font-weight: 500;
+}
+
+.tree-item-inner {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+}
+
+.tree-item-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  width: 16px;
+}
+
+.tree-item-icon svg {
+  width: 12px;
+  height: 12px;
+  transition: transform 0.15s;
+}
+
+.tree-item-icon.is-collapsed svg { transform: rotate(-90deg); }
+
+/* ── Scrollbars ───────────────────────────────────────────── */
+
+.styled-scrollbars ::-webkit-scrollbar       { width: 6px; height: 6px; }
+.styled-scrollbars ::-webkit-scrollbar-track { background: transparent; }
+.styled-scrollbars ::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-bg);
+  border-radius: 3px;
+}
+.styled-scrollbars ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }

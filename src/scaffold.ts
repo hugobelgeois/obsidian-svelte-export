@@ -109,6 +109,9 @@ function copyPluginFiles(
 	removeIfExists(path.join(destRoot, "static"));
 
 	// Copy svelte-lib/ → destRoot/src/
+	// This always includes src/layout.css, which carries the reset, the
+	// Obsidian-style layout shell, and icon-size overrides — so those rules
+	// exist exactly once, regardless of which theme (if any) is selected.
 	const destSrc = path.join(destRoot, "src");
 	copyRecursive(libDir, destSrc);
 
@@ -119,9 +122,13 @@ function copyPluginFiles(
 
 /**
  * Replace destRoot/src/app.css with the content of the active Obsidian theme
- * (if any) merged with all enabled snippets, followed by a variable bridge
- * that maps Obsidian CSS variables to the plugin's own variable names.
- * If no theme is set, only snippets are appended to the existing app.css.
+ * (if any) merged with all enabled snippets. If no theme is set, only
+ * snippets are appended to the existing app.css.
+ *
+ * Layout shell / reset / icon-sizing rules are NOT duplicated here — they
+ * live once in src/layout.css (shipped unconditionally by copyPluginFiles
+ * and imported after app.css), so they keep working no matter what this
+ * function writes into app.css.
  */
 function buildAppCss(
 	obsidianDir: string,
@@ -169,9 +176,6 @@ function buildAppCss(
 				);
 			}
 		}
-		// Bridge: map Obsidian standard variables → plugin variables so all
-		// svelte-lib components keep working regardless of the active theme.
-		chunks.push(CSS_VARIABLE_BRIDGE);
 	} else {
 		// No theme — keep the plugin's own app.css
 		if (fs.existsSync(appCssPath)) {
@@ -205,44 +209,6 @@ function buildAppCss(
 	}
 }
 
-/**
- * Injected after the theme CSS to ensure the web layout shell works correctly.
- * Since svelte-lib now uses native Obsidian classes (workspace, nav-*, tree-item-*),
- * we only need to reset a few browser defaults and enforce the layout dimensions.
- */
-const CSS_VARIABLE_BRIDGE = `
-/* ── Plugin layout reset (injected after theme) ── */
-*, *::before, *::after { box-sizing: border-box; }
-body { margin: 0; overflow: hidden; }
-a { text-decoration: none; }
-
-.app-container, .horizontal-main-container {
-  height: 100vh; overflow: hidden;
-  display: flex; flex-direction: column;
-}
-.workspace {
-  display: flex; flex-direction: row; height: 100vh; overflow: hidden;
-}
-.workspace-split.mod-left-split,
-.workspace-split.mod-right-split {
-  flex-shrink: 0; display: flex; flex-direction: column; overflow: hidden; transition: width .2s ease;
-}
-.workspace-split.mod-left-split  { width: 300px; }
-.workspace-split.mod-right-split { width: 262px; }
-.workspace-split.mod-left-split.is-collapsed,
-.workspace-split.mod-right-split.is-collapsed { width: 0; }
-.workspace-split.mod-root { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-.workspace-tabs, .workspace-tab-container, .workspace-leaf, .workspace-leaf-content {
-  display: flex; flex-direction: column; flex: 1; overflow: hidden;
-}
-.view-content { flex: 1; overflow-y: auto; overflow-x: hidden; }
-.nav-files-container { overflow-y: auto; overflow-x: hidden; flex: 1; }
-
-/* Ensure SVG icons don't inherit theme's oversized dimensions */
-.nav-header .svg-icon,
-.clickable-icon .svg-icon { width: 16px !important; height: 16px !important; }
-.tree-item-icon .svg-icon { width: 14px !important; height: 14px !important; }
-`;
 function copyRecursive(src: string, dest: string): void {
 	fs.mkdirSync(dest, { recursive: true });
 	for (const entry of fs.readdirSync(src, { withFileTypes: true })) {

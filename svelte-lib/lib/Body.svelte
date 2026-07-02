@@ -4,19 +4,12 @@
 </script>
 
 <div class="workspace-split mod-vertical mod-root">
-	<div class="workspace-tabs mod-top">
-		<div class="workspace-tab-container">
-			<div class="workspace-leaf">
-				<div class="workspace-leaf-content" data-type="markdown">
-					<div class="view-content">
-						<div class="markdown-preview-view">
-							<div class="markdown-preview-sizer">
-								{@render children()}
-							</div>
-						</div>
-					</div>
-				</div>
-			</div>
+	<div
+		class="workspace-tabs mod-top workspace-tab-container workspace-leaf workspace-leaf-content view-content markdown-preview-view"
+		data-type="markdown"
+	>
+		<div class="markdown-preview-sizer">
+			{@render children()}
 		</div>
 	</div>
 </div>

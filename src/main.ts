@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import { Notice, Plugin, TAbstractFile, TFile, TFolder } from "obsidian";
 import * as path from "path";
+import { IMAGE_EXTENSIONS, sanitizeRoutePath } from "./constants";
 import { exportFile } from "./pageexporter";
 import { ensureSvelteProject } from "./scaffold";
 import {
@@ -10,16 +11,6 @@ import {
 } from "./settings";
 
 export type ExportCache = Record<string, number>;
-
-const IMAGE_EXTENSIONS = new Set([
-	"png",
-	"jpg",
-	"jpeg",
-	"gif",
-	"webp",
-	"svg",
-	"avif",
-]);
 
 export default class SvelteExporterPlugin extends Plugin {
 	settings: SvelteExporterSettings;
@@ -98,18 +89,7 @@ export default class SvelteExporterPlugin extends Plugin {
 			this.settings.selectedPaths ?? [],
 		)) {
 			if (file.extension !== "md") continue;
-			const sanitized =
-				"/" +
-				file.path
-					.replace(/\.md$/, "")
-					.split("/")
-					.map((seg: string) =>
-						seg
-							.replace(/['"]/g, "")
-							.replace(/[^a-zA-Z0-9_\-. ]/g, "_"),
-					)
-					.join("/");
-			nameMap[sanitized] = file.basename;
+			nameMap["/" + sanitizeRoutePath(file.path)] = file.basename;
 		}
 		const nameMapPath = path.join(
 			destinationPath,

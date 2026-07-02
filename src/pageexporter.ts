@@ -1,16 +1,7 @@
 import * as fs from "fs";
 import { TFile, Vault } from "obsidian";
 import * as path from "path";
-
-const IMAGE_EXTENSIONS = new Set([
-	"png",
-	"jpg",
-	"jpeg",
-	"gif",
-	"webp",
-	"svg",
-	"avif",
-]);
+import { IMAGE_EXTENSIONS, sanitizeRoutePath } from "./constants";
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
@@ -29,13 +20,7 @@ export async function exportFile(
 
 	// Sanitize path segments — apostrophes and other special chars break
 	// Node ESM module resolution when SvelteKit imports the compiled route.
-	const sanitizedPath = file.path
-		.replace(/\.md$/, "")
-		.split("/")
-		.map((seg) =>
-			seg.replace(/['"]/g, "").replace(/[^a-zA-Z0-9_\-. ]/g, "_"),
-		)
-		.join("/");
+	const sanitizedPath = sanitizeRoutePath(file.path);
 
 	const outputDir = path.join(destRoot, "src", "routes", sanitizedPath);
 
@@ -48,16 +33,6 @@ export async function exportFile(
 }
 
 // ── Wikilink helpers ───────────────────────────────────────────────────────
-
-function sanitizeRoutePath(vaultPath: string): string {
-	return vaultPath
-		.replace(/\.md$/, "")
-		.split("/")
-		.map((seg) =>
-			seg.replace(/['"]/g, "").replace(/[^a-zA-Z0-9_\-. ]/g, "_"),
-		)
-		.join("/");
-}
 
 function buildWikilinkMap(vault: Vault): Map<string, string> {
 	const map = new Map<string, string>();

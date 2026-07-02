@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { browser } from "$app/environment";
 	import { onDestroy, onMount } from "svelte";
+	import { fetchWikiHtml } from "$lib/wikiFetch";
 
 	let visible = $state(false);
 	let pinned = $state(false);
@@ -18,72 +19,15 @@
 	let hideTimer: ReturnType<typeof setTimeout> | null = null;
 	let panelEl: HTMLElement;
 
-	// ── Fetch ──────────────────────────────────────────────────────────────
+	// ── Fetch (with per-panel cache on top of the shared fetch helper) ──────
 
-	async function fetchPageHtml(
-		route: string,
-		fragment: string,
-	): Promise<string> {
+	async function loadPreview(route: string, fragment: string): Promise<string> {
 		if (!browser) throw new Error("SSR");
 		const cacheKey = route + (fragment ? "#" + fragment : "");
 		if (cache.has(cacheKey)) return cache.get(cacheKey)!;
-
-		const url = route.endsWith("/") ? route : route + "/";
-		const res = await fetch(url, { headers: { Accept: "text/html" } });
-		if (!res.ok) throw new Error(`HTTP ${res.status}`);
-		const text = await res.text();
-
-		const parser = new DOMParser();
-		const doc = parser.parseFromString(text, "text/html");
-		const content =
-			doc.querySelector(".markdown-rendered") ??
-			doc.querySelector("article");
-		if (!content) throw new Error("selector not found");
-
-		// Fix relative image URLs
-		content.querySelectorAll<HTMLImageElement>("img").forEach((img) => {
-			const src = img.getAttribute("src");
-			if (src && src.startsWith("/")) {
-				img.setAttribute("src", window.location.origin + src);
-			}
-		});
-
-		let pageHtml = content.innerHTML;
-
-		if (fragment) {
-			const decoded = decodeURIComponent(fragment);
-			const slug = decoded
-				.toLowerCase()
-				.replace(/\s+/g, "-")
-				.replace(/[^\w-]/g, "");
-			const heading =
-				content.querySelector(`#${CSS.escape(slug)}`) ??
-				[...content.querySelectorAll("h1,h2,h3,h4,h5,h6")].find(
-					(el) =>
-						el.id.toLowerCase() === slug.toLowerCase() ||
-						el.textContent?.trim().toLowerCase() ===
-							decoded.toLowerCase(),
-				) ??
-				null;
-			if (heading) {
-				const level = parseInt(heading.tagName[1]);
-				const parts: string[] = [heading.outerHTML];
-				let sib = heading.nextElementSibling;
-				while (sib) {
-					if (
-						sib.tagName.match(/^H[1-6]$/) &&
-						parseInt(sib.tagName[1]) <= level
-					)
-						break;
-					parts.push(sib.outerHTML);
-					sib = sib.nextElementSibling;
-				}
-				pageHtml = parts.join("");
-			}
-		}
-
-		cache.set(cacheKey, pageHtml);
-		return pageHtml;
+		const result = await fetchWikiHtml(route, fragment);
+		cache.set(cacheKey, result);
+		return result;
 	}
 
 	// ── Hover ──────────────────────────────────────────────────────────────
@@ -105,7 +49,7 @@
 			visible = true;
 			html = "";
 			try {
-				html = await fetchPageHtml(route, fragment);
+				html = await loadPreview(route, fragment);
 			} catch {
 				error = true;
 			} finally {
