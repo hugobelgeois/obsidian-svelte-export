@@ -1,5 +1,5 @@
 import * as fs from "fs";
-import { Notice, Plugin, TAbstractFile, TFile, TFolder } from "obsidian";
+import { Notice, Plugin, TAbstractFile, TFile } from "obsidian";
 import * as path from "path";
 import { IMAGE_EXTENSIONS, sanitizeRoutePath } from "./constants";
 import { exportFile } from "./pageexporter";
@@ -83,13 +83,22 @@ export default class SvelteExporterPlugin extends Plugin {
 
 		// ── Write nameMap.json ────────────────────────────────────────────────
 		// Maps sanitized route path → original display name, so the FileTree
-		// can show "Léoric" instead of "L_oric".
+		// can show "Léoric" instead of "Leoric". This covers both leaf pages
+		// (md files) AND every ancestor folder, so folder names in the tree
+		// also keep their original spelling/accents instead of the
+		// sanitized route segment.
 		const nameMap: Record<string, string> = {};
 		for (const file of this.resolveFiles(
 			this.settings.selectedPaths ?? [],
 		)) {
 			if (file.extension !== "md") continue;
 			nameMap["/" + sanitizeRoutePath(file.path)] = file.basename;
+
+			let parent = file.parent;
+			while (parent && parent.path && parent.path !== "/") {
+				nameMap["/" + sanitizeRoutePath(parent.path)] = parent.name;
+				parent = parent.parent;
+			}
 		}
 		const nameMapPath = path.join(
 			destinationPath,
@@ -125,7 +134,13 @@ export default class SvelteExporterPlugin extends Plugin {
 		for (const file of files) {
 			try {
 				const mtime = file.stat.mtime;
+				const isImage = IMAGE_EXTENSIONS.has(file.extension);
+
+				// scaffold.ts wipes static/ on every export (clean slate), so
+				// images must always be re-copied — the mtime cache can only
+				// be trusted to skip the (expensive) markdown transform.
 				if (
+					!isImage &&
 					cache[file.path] !== undefined &&
 					cache[file.path] >= mtime
 				) {
@@ -133,7 +148,7 @@ export default class SvelteExporterPlugin extends Plugin {
 					continue;
 				}
 
-				if (IMAGE_EXTENSIONS.has(file.extension)) {
+				if (isImage) {
 					// Copy image to /static/ — served at root URL by SvelteKit
 					const srcPath = path.join(vaultPath, file.path);
 					const destPath = path.join(staticDir, file.name);
@@ -176,42 +191,32 @@ export default class SvelteExporterPlugin extends Plugin {
 
 	// ── Vault file resolution ──────────────────────────────────────────────
 
+	/**
+	 * Resolve `selectedPaths` to actual exportable files.
+	 *
+	 * `selectedPaths` already contains every individual file path that
+	 * should be exported — when a folder is checked in settings.ts,
+	 * `selectAllDescendants` explicitly adds each descendant file (and
+	 * subfolder) to the list. So we only need to pick out the TFile
+	 * entries here; we must NOT re-walk folders, or an individually
+	 * unchecked child file would get re-included via its still-checked
+	 * parent folder.
+	 */
 	resolveFiles(selectedPaths: string[]): TFile[] {
 		const files: TFile[] = [];
 		const seen = new Set<string>();
 
-		const add = (file: TFile) => {
-			if (!seen.has(file.path)) {
-				seen.add(file.path);
-				files.push(file);
-			}
-		};
-		const walk = (folder: TFolder) => {
-			for (const child of folder.children) {
-				if (child instanceof TFile) {
-					if (
-						child.extension === "md" ||
-						IMAGE_EXTENSIONS.has(child.extension)
-					) {
-						add(child);
-					}
-				} else if (child instanceof TFolder) {
-					walk(child);
-				}
-			}
-		};
-
 		for (const p of selectedPaths) {
 			const node: TAbstractFile | null =
 				this.app.vault.getAbstractFileByPath(p);
-			if (node instanceof TFile) {
-				if (
-					node.extension === "md" ||
-					IMAGE_EXTENSIONS.has(node.extension)
-				)
-					add(node);
-			} else if (node instanceof TFolder) {
-				walk(node);
+			if (
+				node instanceof TFile &&
+				(node.extension === "md" ||
+					IMAGE_EXTENSIONS.has(node.extension)) &&
+				!seen.has(node.path)
+			) {
+				seen.add(node.path);
+				files.push(node);
 			}
 		}
 		return files;

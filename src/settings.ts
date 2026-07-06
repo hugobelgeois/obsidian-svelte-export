@@ -47,6 +47,24 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
+	/**
+	 * Re-render only the file/folder tree, preserving its scroll position —
+	 * unlike display() (which rebuilds the whole settings tab and always
+	 * resets scroll to the top). Used after every Export/Visible toggle so
+	 * cascading state changes (parents, ancestors, children) redraw without
+	 * yanking the user back to the top of a long tree.
+	 */
+	private refreshTree(): void {
+		const treeContainer = this.containerEl.querySelector<HTMLElement>(
+			".svelte-exporter-tree",
+		);
+		if (!treeContainer) return;
+		const scrollTop = treeContainer.scrollTop;
+		treeContainer.empty();
+		this.renderTree(treeContainer, this.app.vault.getRoot());
+		treeContainer.scrollTop = scrollTop;
+	}
+
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
@@ -270,11 +288,13 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		}) as HTMLInputElement;
 		exportCb.title = "Export";
 		exportCb.className = "sve-cb";
-		exportCb.checked = this.plugin.settings.selectedPaths.includes(
-			folder.path,
-		);
-		exportCb.indeterminate =
-			!exportCb.checked && this.hasPartialSelection(folder);
+		// Checked as soon as the folder itself OR any descendant is selected,
+		// so checking a single deeply-nested file lights up every ancestor
+		// checkbox up the tree (without touching sibling checkboxes).
+		exportCb.checked =
+			this.plugin.settings.selectedPaths.includes(folder.path) ||
+			this.hasPartialSelection(folder);
+		exportCb.indeterminate = false;
 
 		// Eye toggle button (visible = not hidden)
 		const eyeBtn = row.createEl("button", { cls: "sve-eye-btn" });
@@ -284,7 +304,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			? "Hidden from file tree"
 			: "Visible in file tree";
 		eyeBtn.classList.toggle("sve-eye-hidden", isHidden);
-		if (!exportCb.checked && !exportCb.indeterminate) {
+		if (!exportCb.checked) {
 			eyeBtn.disabled = true;
 			eyeBtn.classList.add("sve-eye-disabled");
 		}
@@ -312,23 +332,24 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 
 		exportCb.addEventListener("change", async () => {
 			if (exportCb.checked) {
-				// Select folder AND all descendants explicitly
+				// Select folder AND all descendants explicitly (2.1 reverse:
+				// checking a parent selects every child).
 				this.selectPath(folder.path);
 				this.selectAllDescendants(folder);
 			} else {
-				this.deselectPath(folder.path);
-				this.deselectAllDescendants(folder);
-				this.deselectHiddenPath(folder.path);
-				this.deselectHiddenDescendants(folder);
+				// 2.1: unchecking a parent deselects every descendant.
+				// deselectByPrefix works on the stored path strings directly,
+				// so it also clears stale entries left over from files that
+				// were since renamed/moved — deselectAllDescendants (which
+				// only walks the *current* live vault tree) could leave those
+				// behind and make the checkbox impossible to fully uncheck.
+				this.deselectByPrefix(folder.path);
+				this.deselectHiddenByPrefix(folder.path);
 			}
 			await this.plugin.saveSettings();
-			// Re-render only the children area to avoid collapsing folders
-			childrenEl.empty();
-			this.renderTree(childrenEl, folder, depth + 1);
-			// Update eye button state
-			const nowExported = exportCb.checked;
-			eyeBtn.disabled = !nowExported;
-			eyeBtn.classList.toggle("sve-eye-disabled", !nowExported);
+			// Refresh just the tree: ancestors above this folder may also
+			// need their checked state recomputed, without resetting scroll.
+			this.refreshTree();
 		});
 
 		eyeBtn.addEventListener("click", async () => {
@@ -336,18 +357,20 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				folder.path,
 			);
 			if (nowHidden) {
-				this.deselectHiddenPath(folder.path);
-				eyeBtn.innerHTML = EYE_OPEN_SVG;
-				eyeBtn.title = "Visible in file tree";
-				eyeBtn.classList.remove("sve-eye-hidden");
+				// Making a parent visible again makes every descendant
+				// explicitly visible too (mirrors Export's uncheck cascade).
+				this.deselectHiddenByPrefix(folder.path);
 			} else {
+				// Hiding a parent explicitly hides every descendant —
+				// files AND folders — not just this folder itself.
 				this.selectHiddenPath(folder.path);
-				this.deselectHiddenDescendants(folder);
-				eyeBtn.innerHTML = EYE_CLOSED_SVG;
-				eyeBtn.title = "Hidden from file tree";
-				eyeBtn.classList.add("sve-eye-hidden");
+				this.hideAllDescendants(folder);
 			}
 			await this.plugin.saveSettings();
+			// Same logic as Export: refresh the tree (not just this button)
+			// so descendants' disabled/hidden state updates too, without
+			// resetting scroll position.
+			this.refreshTree();
 		});
 	}
 
@@ -370,11 +393,14 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		}) as HTMLInputElement;
 		exportCb.title = "Export";
 		exportCb.className = "sve-cb";
-		const ancestorSelected = this.isAncestorSelected(file);
-		exportCb.checked =
-			this.plugin.settings.selectedPaths.includes(file.path) ||
-			ancestorSelected;
-		exportCb.disabled = ancestorSelected;
+		// Reflects this file's own explicit selection only. When a folder is
+		// checked, selectAllDescendants already adds every descendant file to
+		// selectedPaths, so this stays accurate — and, unlike before, the
+		// checkbox is never disabled: the user can still uncheck this one
+		// file even while its parent folder is checked (2.2).
+		exportCb.checked = this.plugin.settings.selectedPaths.includes(
+			file.path,
+		);
 
 		// Eye toggle button
 		const eyeBtn = row.createEl("button", { cls: "sve-eye-btn" });
@@ -398,9 +424,10 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				this.deselectPath(file.path);
 				this.deselectHiddenPath(file.path);
 			}
-			eyeBtn.disabled = !exportCb.checked;
-			eyeBtn.classList.toggle("sve-eye-disabled", !exportCb.checked);
 			await this.plugin.saveSettings();
+			// Refresh the tree so every ancestor folder checkbox up the tree
+			// recomputes to "checked" (2.3), without resetting scroll.
+			this.refreshTree();
 		});
 
 		eyeBtn.addEventListener("click", async () => {
@@ -409,16 +436,11 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			);
 			if (nowHidden) {
 				this.deselectHiddenPath(file.path);
-				eyeBtn.innerHTML = EYE_OPEN_SVG;
-				eyeBtn.title = "Visible in file tree";
-				eyeBtn.classList.remove("sve-eye-hidden");
 			} else {
 				this.selectHiddenPath(file.path);
-				eyeBtn.innerHTML = EYE_CLOSED_SVG;
-				eyeBtn.title = "Hidden from file tree";
-				eyeBtn.classList.add("sve-eye-hidden");
 			}
 			await this.plugin.saveSettings();
+			this.refreshTree();
 		});
 	}
 
@@ -433,17 +455,28 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			this.plugin.settings.selectedPaths.filter((s) => s !== p);
 	}
 
-	/** Select ALL descendants (files + folders) so they show as checked. */
+	/**
+	 * Remove `p` itself and every stored path nested under it, by string
+	 * prefix — directly on the persisted array, not by walking the live
+	 * vault tree. This is what makes unchecking a folder reliable even for
+	 * data saved before this fix: if a file was renamed/moved/deleted since
+	 * the folder was last checked, its stale entry can no longer be reached
+	 * by recursing `folder.children` (deselectAllDescendants), which left it
+	 * behind forever and made the checkbox impossible to fully uncheck.
+	 */
+	private deselectByPrefix(p: string) {
+		const prefix = p === "/" ? "" : p + "/";
+		this.plugin.settings.selectedPaths =
+			this.plugin.settings.selectedPaths.filter(
+				(s) => s !== p && !s.startsWith(prefix),
+			);
+	}
+
+	/** Select ALL current descendants (files + folders) so they show as checked. */
 	private selectAllDescendants(folder: TFolder) {
 		for (const child of folder.children) {
 			this.selectPath(child.path);
 			if (child instanceof TFolder) this.selectAllDescendants(child);
-		}
-	}
-	private deselectAllDescendants(folder: TFolder) {
-		for (const child of folder.children) {
-			this.deselectPath(child.path);
-			if (child instanceof TFolder) this.deselectAllDescendants(child);
 		}
 	}
 
@@ -455,23 +488,29 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		this.plugin.settings.hiddenPaths =
 			this.plugin.settings.hiddenPaths.filter((s) => s !== p);
 	}
-	private deselectHiddenDescendants(folder: TFolder) {
-		const prefix = folder.path === "/" ? "" : folder.path + "/";
+	private deselectHiddenByPrefix(p: string) {
+		const prefix = p === "/" ? "" : p + "/";
 		this.plugin.settings.hiddenPaths =
 			this.plugin.settings.hiddenPaths.filter(
-				(p) => !p.startsWith(prefix),
+				(s) => s !== p && !s.startsWith(prefix),
 			);
 	}
 
-	private isAncestorSelected(item: TAbstractFile): boolean {
-		let parent = item.parent;
-		while (parent) {
-			if (this.plugin.settings.selectedPaths.includes(parent.path))
-				return true;
-			parent = parent.parent;
+	/**
+	 * Mark every current descendant (files AND folders) explicitly hidden —
+	 * mirrors selectAllDescendants for Export. Without this, only the
+	 * clicked folder's own entry was recorded and children relied purely on
+	 * ancestor inheritance (isAncestorHidden) to *look* hidden in the
+	 * exported site, but their own eye state here in settings never
+	 * reflected it.
+	 */
+	private hideAllDescendants(folder: TFolder) {
+		for (const child of folder.children) {
+			this.selectHiddenPath(child.path);
+			if (child instanceof TFolder) this.hideAllDescendants(child);
 		}
-		return false;
 	}
+
 	private isAncestorHidden(item: TAbstractFile): boolean {
 		let parent = item.parent;
 		while (parent) {

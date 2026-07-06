@@ -12,15 +12,15 @@
 
 <div
 	class="workspace-split mod-horizontal mod-sidedock mod-left-split"
-	style="min-width:200px;width:200px;"
+	class:is-collapsed={collapsed}
+	style="min-width:{collapsed ? '40px' : '200px'};width:{collapsed
+		? '40px'
+		: '200px'};"
 >
-	<div
-		class="workspace-tabs mod-top mod-top-left-space workspace-tab-container workspace-leaf workspace-leaf-content"
-		class:is-collapsed={collapsed}
-		data-type="file-explorer"
-	>
-		<div class="nav-header">
-			<div class="nav-buttons-container">
+	<!-- Always visible, even when collapsed, so the toggle button stays reachable -->
+	<div class="nav-header">
+		<div class="nav-buttons-container">
+			{#if !collapsed}
 				<div class="search-input-container">
 					<input
 						type="search"
@@ -29,42 +29,42 @@
 						class="search-input"
 					/>
 				</div>
-				<button
-					class="clickable-icon nav-action-button"
-					aria-label={collapsed
-						? "Expand sidebar"
-						: "Collapse sidebar"}
-					onclick={toggleCollapse}
+			{/if}
+			<button
+				class="clickable-icon nav-action-button"
+				aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+				onclick={toggleCollapse}
+			>
+				<svg
+					xmlns="http://www.w3.org/2000/svg"
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					class="svg-icon"
 				>
-					<svg
-						xmlns="http://www.w3.org/2000/svg"
-						width="16"
-						height="16"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						class="svg-icon"
-					>
-						{#if collapsed}
-							<path d="M3 8L12 17L21 8" />
-						{:else}
-							<path d="m7 20 5-5 5 5" />
-							<path d="m7 4 5 5 5-5" />
-						{/if}
-					</svg>
-				</button>
+					{#if collapsed}
+						<path d="M3 8L12 17L21 8" />
+					{:else}
+						<path d="m7 20 5-5 5 5" />
+						<path d="m7 4 5 5 5-5" />
+					{/if}
+				</svg>
+			</button>
+		</div>
+	</div>
+	{#if !collapsed}
+		<div
+			class="workspace-tabs mod-top mod-top-left-space workspace-tab-container workspace-leaf workspace-leaf-content"
+			data-type="file-explorer"
+		>
+			<div class="nav-files-container node-insert-event">
+				<FileTree {query} currentPath={$page.url.pathname} />
 			</div>
 		</div>
-		{#if !collapsed}
-			<div class="nav-files-container node-insert-event">
-				<FileTree
-					{query}
-					currentPath={$page.url.pathname}
-				/>
-			</div>
-		{/if}
-	</div>
+	{/if}
 </div>

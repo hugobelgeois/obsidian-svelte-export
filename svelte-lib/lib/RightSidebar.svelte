@@ -13,41 +13,39 @@
 
 <div
 	class="workspace-split mod-horizontal mod-sidedock mod-right-split"
-	style="min-width:200px;width:200px;"
+	class:is-collapsed={collapsed}
+	style="min-width:{collapsed ? '40px' : '200px'};width:{collapsed
+		? '40px'
+		: '200px'};"
 >
-	<div
-		class="workspace-tabs mod-top mod-top-right-space workspace-tab-container workspace-leaf workspace-leaf-content"
-		class:is-collapsed={collapsed}
-		data-type="outline"
-	>
-		<div class="nav-header">
-			<div class="nav-buttons-container">
-				<button
-					class="clickable-icon nav-action-button"
-					aria-label={collapsed
-						? "Expand sidebar"
-						: "Collapse sidebar"}
-					onclick={() => (collapsed = !collapsed)}
+	<!-- Always visible, even when collapsed, so the toggle button stays reachable -->
+	<div class="nav-header">
+		<div class="nav-buttons-container">
+			<button
+				class="clickable-icon nav-action-button"
+				aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+				onclick={() => (collapsed = !collapsed)}
+			>
+				<svg
+					xmlns="http://www.w3.org/2000/svg"
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					class="svg-icon"
 				>
-					<svg
-						xmlns="http://www.w3.org/2000/svg"
-						width="16"
-						height="16"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						class="svg-icon"
-					>
-						{#if collapsed}
-							<path d="M15 18l-6-6 6-6" />
-						{:else}
-							<path d="M9 18l6-6-6-6" />
-						{/if}
-					</svg>
-				</button>
+					{#if collapsed}
+						<path d="M15 18l-6-6 6-6" />
+					{:else}
+						<path d="M9 18l6-6-6-6" />
+					{/if}
+				</svg>
+			</button>
+			{#if !collapsed}
 				<button
 					class="clickable-icon nav-action-button"
 					aria-label="Toggle light/dark mode"
@@ -92,13 +90,18 @@
 						</svg>
 					{/if}
 				</button>
-			</div>
+			{/if}
 		</div>
-		{#if !collapsed}
+	</div>
+	{#if !collapsed}
+		<div
+			class="workspace-tabs mod-top mod-top-right-space workspace-tab-container workspace-leaf workspace-leaf-content"
+			data-type="outline"
+		>
 			<div class="view-content node-insert-event">
 				<Graph />
 				<Toc />
 			</div>
-		{/if}
-	</div>
+		</div>
+	{/if}
 </div>
