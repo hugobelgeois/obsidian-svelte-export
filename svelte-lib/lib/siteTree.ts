@@ -1,4 +1,13 @@
-import nameMap from "$lib/nameMap.json";
+// import.meta.glob instead of a static `import ... from "$lib/nameMap.json"`:
+// a static import fails the whole Vite build if nameMap.json doesn't exist
+// yet (e.g. right after updating the plugin's svelte-lib files but before
+// the very first export has run). The glob form simply returns an empty
+// result set instead of erroring.
+const nameMapModules = import.meta.glob("./nameMap.json", {
+	eager: true,
+}) as Record<string, { default?: Record<string, string> }>;
+const nameMap: Record<string, string> =
+	Object.values(nameMapModules)[0]?.default ?? {};
 
 export interface TreeNode {
 	name: string;
@@ -44,8 +53,7 @@ function buildTree(): TreeNode[] {
 				// covers both leaf pages AND folders, so accented/original
 				// names ("Règles") show up instead of the sanitized route
 				// segment ("Regles").
-				const displayName =
-					(nameMap as Record<string, string>)[builtPath] ?? part;
+				const displayName = nameMap[builtPath] ?? part;
 
 				const node: TreeNode = {
 					name: displayName,

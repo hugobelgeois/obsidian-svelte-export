@@ -112,6 +112,34 @@ export default class SvelteExporterPlugin extends Plugin {
 			"utf-8",
 		);
 
+		// ── Link graph (real wikilinks, for the Graph view) ─────────────────
+		// Maps each note's route → the routes of the notes it links to.
+		// Loaded first so unchanged (cache-skipped) files keep their
+		// previously-recorded links instead of losing them. Written right
+		// away (like hidden.json/nameMap.json above) so the file exists on
+		// disk immediately — even on a brand new destination with nothing in
+		// it yet, and even if the export loop below hits an error — instead
+		// of only appearing once the whole export finishes.
+		const linksJsonPath = path.join(
+			destinationPath,
+			"src",
+			"lib",
+			"links.json",
+		);
+		let linksMap: Record<string, string[]> = {};
+		if (fs.existsSync(linksJsonPath)) {
+			try {
+				linksMap = JSON.parse(fs.readFileSync(linksJsonPath, "utf-8"));
+			} catch {
+				linksMap = {};
+			}
+		}
+		fs.writeFileSync(
+			linksJsonPath,
+			JSON.stringify(linksMap, null, 2),
+			"utf-8",
+		);
+
 		// ── Export cache ───────────────────────────────────────────────────
 		const cacheFile = path.join(destinationPath, ".export-cache.json");
 		let cache: ExportCache = {};
@@ -135,12 +163,21 @@ export default class SvelteExporterPlugin extends Plugin {
 			try {
 				const mtime = file.stat.mtime;
 				const isImage = IMAGE_EXTENSIONS.has(file.extension);
+				const ownRoute = "/" + sanitizeRoutePath(file.path);
+				// A file whose links were never recorded (e.g. right after
+				// upgrading to this feature) must be re-exported even if the
+				// mtime cache would otherwise skip it, or its links.json
+				// entry would stay permanently missing.
+				const hasLinkData =
+					isImage ||
+					Object.prototype.hasOwnProperty.call(linksMap, ownRoute);
 
 				// scaffold.ts wipes static/ on every export (clean slate), so
 				// images must always be re-copied — the mtime cache can only
 				// be trusted to skip the (expensive) markdown transform.
 				if (
 					!isImage &&
+					hasLinkData &&
 					cache[file.path] !== undefined &&
 					cache[file.path] >= mtime
 				) {
@@ -154,7 +191,12 @@ export default class SvelteExporterPlugin extends Plugin {
 					const destPath = path.join(staticDir, file.name);
 					fs.copyFileSync(srcPath, destPath);
 				} else {
-					await exportFile(file, destinationPath, this.app.vault);
+					const linkedRoutes = await exportFile(
+						file,
+						destinationPath,
+						this.app.vault,
+					);
+					linksMap[ownRoute] = linkedRoutes;
 				}
 
 				cache[file.path] = mtime;
@@ -169,6 +211,11 @@ export default class SvelteExporterPlugin extends Plugin {
 		}
 
 		fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2), "utf-8");
+		fs.writeFileSync(
+			linksJsonPath,
+			JSON.stringify(linksMap, null, 2),
+			"utf-8",
+		);
 
 		const parts: string[] = [];
 		if (exported) parts.push(`✅ ${exported} exported`);

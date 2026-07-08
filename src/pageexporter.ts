@@ -9,10 +9,10 @@ export async function exportFile(
 	file: TFile,
 	destRoot: string,
 	vault: Vault,
-): Promise<void> {
+): Promise<string[]> {
 	const markdown = await vault.read(file);
 	const wikilinkMap = buildWikilinkMap(vault);
-	const { pageSvelte, pageTs } = markdownToSvelte(
+	const { pageSvelte, pageTs, linkedRoutes } = markdownToSvelte(
 		markdown,
 		file.basename,
 		wikilinkMap,
@@ -30,6 +30,8 @@ export async function exportFile(
 
 	fs.writeFileSync(path.join(outputDir, "+page.svelte"), pageSvelte, "utf-8");
 	fs.writeFileSync(path.join(outputDir, "+page.ts"), pageTs, "utf-8");
+
+	return linkedRoutes;
 }
 
 // ── Wikilink helpers ───────────────────────────────────────────────────────
@@ -97,6 +99,7 @@ function parseFrontMatter(markdown: string): {
 function processWikilinks(
 	body: string,
 	wikilinkMap: Map<string, string>,
+	linkedRoutes: Set<string>,
 ): string {
 	// Embeds first
 	body = body.replace(
@@ -113,6 +116,7 @@ function processWikilinks(
 			const resolved = resolveWikilink(target, wikilinkMap);
 			if (!resolved)
 				return `<span class="wiki-unresolved">${filename}</span>`;
+			linkedRoutes.add(resolved.route);
 			const { route, fragment } = resolved;
 			return `<div class="wiki-embed" data-route="${encodeURIComponent(route)}" data-fragment="${encodeURIComponent(fragment)}"></div>`;
 		},
@@ -127,6 +131,7 @@ function processWikilinks(
 			const label = (alias ?? noteName).trim();
 			if (!resolved)
 				return `<span class="wiki-unresolved">${label}</span>`;
+			linkedRoutes.add(resolved.route);
 			const { route, fragment } = resolved;
 			const href = fragment ? `${route}#${slugify(fragment)}` : route;
 			// Use HTML <a> directly so the link survives renderMarkdown unchanged
@@ -305,13 +310,14 @@ function markdownToSvelte(
 	markdown: string,
 	title: string,
 	wikilinkMap: Map<string, string>,
-): { pageSvelte: string; pageTs: string } {
+): { pageSvelte: string; pageTs: string; linkedRoutes: string[] } {
 	const { meta, body: rawBody } = parseFrontMatter(markdown);
 	const pageTitle = meta["title"] || title;
 	const pageDescription = meta["description"] || "";
 
 	// Pre-process wikilinks before splitting into sections
-	const body = processWikilinks(rawBody, wikilinkMap);
+	const linkedRoutes = new Set<string>();
+	const body = processWikilinks(rawBody, wikilinkMap, linkedRoutes);
 
 	const sections = parseIntoSections(body);
 
@@ -376,5 +382,5 @@ export const load: PageLoad = () => ({
 });
 `;
 
-	return { pageSvelte, pageTs };
+	return { pageSvelte, pageTs, linkedRoutes: [...linkedRoutes] };
 }

@@ -8,6 +8,18 @@
 	function toggleCollapse() {
 		collapsed = !collapsed;
 	}
+
+	// $page.url.pathname is URL-encoded by the browser (spaces become
+	// "%20", etc.) while route/node paths use the literal folder names on
+	// disk — decode here so FileTree's active-item comparison actually
+	// matches for paths containing spaces or special characters.
+	let currentPath = $derived.by(() => {
+		try {
+			return decodeURIComponent($page.url.pathname);
+		} catch {
+			return $page.url.pathname;
+		}
+	});
 </script>
 
 <div
@@ -63,7 +75,7 @@
 			data-type="file-explorer"
 		>
 			<div class="nav-files-container node-insert-event">
-				<FileTree {query} currentPath={$page.url.pathname} />
+				<FileTree {query} {currentPath} />
 			</div>
 		</div>
 	{/if}

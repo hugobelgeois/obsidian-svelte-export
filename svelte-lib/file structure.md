@@ -19,6 +19,7 @@ svelte-lib
 ---- Graph.svelte
 ---- LeftSidebar.svelte
 ---- Linkpreview.svelte
+---- linkGraph.ts
 ---- markdownRenderer.ts
 ---- RightSidebar.svelte
 ---- siteTree.ts
