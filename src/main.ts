@@ -65,6 +65,8 @@ export default class SvelteExporterPlugin extends Plugin {
 		);
 		if (!ready) return;
 
+		this.writeDefaultPage(destinationPath, files);
+
 		// ── Write hidden.json ──────────────────────────────────────────────
 		const hiddenRoutes = this.resolveHiddenRoutes(
 			this.settings.hiddenPaths ?? [],
@@ -271,6 +273,67 @@ export default class SvelteExporterPlugin extends Plugin {
 
 	private resolveHiddenRoutes(hiddenPaths: string[]): string[] {
 		return hiddenPaths.map((p) => "/" + p.replace(/\.md$/, ""));
+	}
+
+	/**
+	 * Generates the site's root page (src/routes/+page.svelte + +page.ts)
+	 * according to the "Default page" setting:
+	 * - "" (default): leave the welcome-screen template that
+	 *   ensureSvelteProject just copied from svelte-lib/routes/+page.svelte
+	 *   untouched.
+	 * - "__graph__": show the graph view as a normal full page, not a popup.
+	 * - anything else: a route path — redirect "/" to that note.
+	 */
+	private writeDefaultPage(destinationPath: string, files: TFile[]) {
+		const defaultPage = this.settings.defaultPage ?? "";
+		if (defaultPage === "") return;
+
+		const routesDir = path.join(destinationPath, "src", "routes");
+		const pageSveltePath = path.join(routesDir, "+page.svelte");
+		const pageTsPath = path.join(routesDir, "+page.ts");
+
+		if (defaultPage === "__graph__") {
+			fs.writeFileSync(
+				pageSveltePath,
+				'<script lang="ts">\n\timport Graph from "$lib/Graph.svelte";\n</script>\n\n<Graph standalone />\n',
+				"utf-8",
+			);
+			fs.writeFileSync(
+				pageTsPath,
+				"export const prerender = true;\n",
+				"utf-8",
+			);
+			return;
+		}
+
+		// A specific note's route — but only redirect there if it's still
+		// actually part of the current export selection; otherwise silently
+		// fall back to the welcome screen rather than shipping a redirect
+		// to a page that was never generated.
+		const validRoutes = new Set(
+			files
+				.filter((f) => f.extension === "md")
+				.map((f) => "/" + sanitizeRoutePath(f.path)),
+		);
+		if (!validRoutes.has(defaultPage)) return;
+
+		const target = defaultPage.endsWith("/")
+			? defaultPage
+			: defaultPage + "/";
+		fs.writeFileSync(
+			pageSveltePath,
+			`<!-- Redirects to ${target} — see +page.ts -->\n`,
+			"utf-8",
+		);
+		fs.writeFileSync(
+			pageTsPath,
+			'import { redirect } from "@sveltejs/kit";\n\n' +
+				"export const prerender = true;\n\n" +
+				"export const load = () => {\n" +
+				`\tthrow redirect(307, ${JSON.stringify(target)});\n` +
+				"};\n",
+			"utf-8",
+		);
 	}
 
 	// ── Cache ──────────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@ import {
 	TFile,
 	TFolder,
 } from "obsidian";
-import { IMAGE_EXTENSIONS } from "./constants";
+import { IMAGE_EXTENSIONS, sanitizeRoutePath } from "./constants";
 import type SvelteExporterPlugin from "./main";
 
 export type MarkdownStyle = "obsidian" | "custom" | "none";
@@ -20,6 +20,9 @@ export interface SvelteExporterSettings {
 	markdownStyle: MarkdownStyle;
 	customCssPath: string;
 	selectedTheme: string; // "" = follow Obsidian, "__none__" = no theme, else theme name
+	// "" = welcome screen (default), "__graph__" = graph view as a full page,
+	// else a vault file path (from selectedPaths) to redirect "/" to.
+	defaultPage: string;
 }
 
 export const DEFAULT_SETTINGS: SvelteExporterSettings = {
@@ -30,6 +33,7 @@ export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	markdownStyle: "obsidian",
 	customCssPath: "",
 	selectedTheme: "__none__",
+	defaultPage: "",
 };
 
 // SVG icons for the eye toggle
@@ -181,6 +185,55 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				});
 			});
 
+		// ── Default page ──────────────────────────────────────────────────
+		containerEl.createEl("h3", { text: "Default page" });
+
+		const defaultPageOptions: Record<string, string> = {
+			"": "Welcome screen (default)",
+			__graph__: "Graph view (full page)",
+		};
+		// One entry per currently-selected markdown file, so the user can
+		// pick any exported note as the site's landing page.
+		const availablePages = this.plugin
+			.resolveFiles(this.plugin.settings.selectedPaths ?? [])
+			.filter((f) => f.extension === "md")
+			.sort((a, b) => a.path.localeCompare(b.path));
+		for (const file of availablePages) {
+			const route = "/" + sanitizeRoutePath(file.path);
+			defaultPageOptions[route] = file.path;
+		}
+
+		new Setting(containerEl)
+			.setName("Default page")
+			.setDesc(
+				"What to show when no specific note is requested (i.e. the " +
+					"site's root URL). Choose the welcome screen, the graph " +
+					"view as a full page, or one of the notes selected for " +
+					"export below.",
+			)
+			.addDropdown((drop) => {
+				for (const [value, label] of Object.entries(
+					defaultPageOptions,
+				)) {
+					drop.addOption(value, label);
+				}
+				const current = this.plugin.settings.defaultPage ?? "";
+				// Fall back to the default if the previously-chosen page is
+				// no longer part of the export selection.
+				drop.setValue(
+					Object.prototype.hasOwnProperty.call(
+						defaultPageOptions,
+						current,
+					)
+						? current
+						: "",
+				);
+				drop.onChange(async (value) => {
+					this.plugin.settings.defaultPage = value;
+					await this.plugin.saveSettings();
+				});
+			});
+
 		// ── Export cache ──────────────────────────────────────────────────
 		containerEl.createEl("h3", { text: "Export cache" });
 
@@ -298,7 +351,9 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 
 		// Eye toggle button (visible = not hidden)
 		const eyeBtn = row.createEl("button", { cls: "sve-eye-btn" });
-		const isHidden = this.plugin.settings.hiddenPaths.includes(folder.path);
+		const isHidden =
+			this.plugin.settings.hiddenPaths.includes(folder.path) ||
+			this.isAncestorHidden(folder);
 		eyeBtn.innerHTML = isHidden ? EYE_CLOSED_SVG : EYE_OPEN_SVG;
 		eyeBtn.title = isHidden
 			? "Hidden from file tree"

@@ -5,6 +5,10 @@
 	import { flattenTree, siteTree } from "$lib/siteTree";
 	import { onDestroy, onMount } from "svelte";
 
+	/** When true, render as a full in-page view (used as the site's default
+	 * page) instead of the small sidebar preview + popup modal. */
+	let { standalone = false }: { standalone?: boolean } = $props();
+
 	// ── Types ────────────────────────────────────────────────────────────────
 
 	interface GNode {
@@ -30,6 +34,10 @@
 		width: number;
 		height: number;
 		scale: number;
+		/** The "fit all nodes" scale, tracked even after a manual zoom moves
+		 * `scale` away from it — used as the zoom-in reference point for
+		 * degree-based label transparency. */
+		fitScale: number;
 		panX: number;
 		panY: number;
 		hoveredId: string | null;
@@ -47,6 +55,7 @@
 			width: 0,
 			height: 0,
 			scale: 1,
+			fitScale: 1,
 			panX: 0,
 			panY: 0,
 			hoveredId: null,
@@ -95,15 +104,23 @@
 	// ── Physics (continuous, animated — settles instead of blocking once) ──
 
 	let alpha = 1;
-	const ALPHA_DECAY = 0.02;
-	const ALPHA_MIN = 0.01;
+	/** Multiplicative decay: settling slows down gradually instead of
+	 * stopping abruptly after a fixed time — it keeps going for as long as
+	 * there's meaningful motion left (3). */
+	const ALPHA_DECAY_RATE = 0.985;
+	const ALPHA_MIN = 0.005;
 	const REPULSION = 2600;
 	const REST_LENGTH = 46;
 	const SPRING = 0.05;
-	/** Never let two nodes get closer than this for force purposes — without
-	 * it, repulsion (∝ 1/dist²) blows up as dist→0 and a dragged node can
-	 * fling its neighbors across the screen in a single frame. */
+	/** Never let two nodes get closer than this for repulsion-force purposes
+	 * — without it, repulsion (∝ 1/dist²) blows up as dist→0 and a dragged
+	 * node can fling its neighbors across the screen in a single frame. */
 	const MIN_DIST = 12;
+	/** Hard minimum on-screen separation between any two nodes (2) — unlike
+	 * MIN_DIST above (which only softens the repulsion force), this is a
+	 * real position constraint, enforced every frame regardless of alpha,
+	 * so nodes never end up overlapping even once the layout has settled. */
+	const MIN_SEPARATION = 18;
 	/** Hard cap on how far a node can move in one frame, regardless of how
 	 * large the accumulated force was. */
 	const MAX_SPEED = 6;
@@ -161,6 +178,12 @@
 			}
 		}
 
+		// (1): the current note and its direct neighbors get an extra pull
+		// toward the center, on top of the degree-based one below, so they
+		// stay as close to the middle as possible regardless of how many
+		// links they otherwise have.
+		const focusIds = getCurrentNeighborIds();
+
 		for (const n of nodes) {
 			if (n.fx !== null && n.fy !== null) {
 				n.x = n.fx;
@@ -170,8 +193,14 @@
 				continue;
 			}
 
-			n.vx += (cx - n.x) * 0.006 * alpha;
-			n.vy += (cy - n.y) * 0.006 * alpha;
+			// (4): the more a note is linked, the more strongly it's pulled
+			// toward the center — so well-connected hubs keep the middle of
+			// the graph filled instead of everything spreading into a
+			// hollow ring around an empty center.
+			const degreeFactor = 1 + Math.min(n.degree, 10) * 0.35;
+			const focusFactor = focusIds.has(n.id) ? 2.2 : 1;
+			n.vx += (cx - n.x) * 0.006 * alpha * degreeFactor * focusFactor;
+			n.vy += (cy - n.y) * 0.006 * alpha * degreeFactor * focusFactor;
 
 			// Elastic circular boundary (4): only pushes back once a node
 			// drifts past BOUNDARY_R, gently, proportional to the overshoot.
@@ -199,7 +228,46 @@
 			n.vy *= 0.82;
 		}
 
-		alpha = Math.max(0, alpha - ALPHA_DECAY);
+		// Settling slows down but never hard-stops — it keeps contributing
+		// a small amount of motion for as long as nodes are still adjusting.
+		alpha = Math.max(alpha * ALPHA_DECAY_RATE, ALPHA_MIN);
+	}
+
+	/**
+	 * Hard minimum-separation constraint (2), enforced every frame
+	 * regardless of alpha/settling state or dragging — directly nudges
+	 * apart any two nodes closer than MIN_SEPARATION so they never
+	 * overlap, even after the layout has fully settled.
+	 */
+	function enforceSeparation() {
+		for (let i = 0; i < nodes.length; i++) {
+			for (let j = i + 1; j < nodes.length; j++) {
+				const a = nodes[i];
+				const b = nodes[j];
+				const dx = b.x - a.x;
+				const dy = b.y - a.y;
+				let dist = Math.sqrt(dx * dx + dy * dy);
+				if (dist >= MIN_SEPARATION) continue;
+				if (dist < 0.001) dist = 0.001;
+				const overlap = (MIN_SEPARATION - dist) / 2;
+				const nx = dx / dist;
+				const ny = dy / dist;
+				const aFixed = a.fx !== null;
+				const bFixed = b.fx !== null;
+				if (!aFixed && !bFixed) {
+					a.x -= nx * overlap;
+					a.y -= ny * overlap;
+					b.x += nx * overlap;
+					b.y += ny * overlap;
+				} else if (!aFixed) {
+					a.x -= nx * overlap * 2;
+					a.y -= ny * overlap * 2;
+				} else if (!bFixed) {
+					b.x += nx * overlap * 2;
+					b.y += ny * overlap * 2;
+				}
+			}
+		}
 	}
 
 	// ── Views & shared display state ─────────────────────────────────────────
@@ -246,17 +314,25 @@
 	 * alone could clip some of them.
 	 */
 	function fitView(view: View, force = false) {
-		if (view.userAdjusted && !force) return;
 		if (view.width <= 0 || view.height <= 0) return;
 		const { minX, minY, maxX, maxY } = computeBounds();
 		const w = Math.max(maxX - minX, 1);
 		const h = Math.max(maxY - minY, 1);
 		const margin = 28;
-		const scale = Math.min(
-			(view.width - margin * 2) / w,
-			(view.height - margin * 2) / h,
+		const idealScale = Math.max(
+			Math.min(
+				Math.min(
+					(view.width - margin * 2) / w,
+					(view.height - margin * 2) / h,
+				),
+				3,
+			),
+			0.05,
 		);
-		view.scale = Math.max(Math.min(scale, 3), 0.05);
+		view.fitScale = idealScale;
+
+		if (view.userAdjusted && !force) return;
+		view.scale = idealScale;
 		const cx = (minX + maxX) / 2;
 		const cy = (minY + maxY) / 2;
 		view.panX = view.width / 2 - cx * view.scale;
@@ -283,8 +359,30 @@
 		return ids;
 	}
 
+	/** Fully restart the layout from scratch — scattered positions, hot
+	 * physics, no leftover velocity or drag state. */
+	function resetPhysics() {
+		for (const n of nodes) {
+			n.x = Math.random() * SIM_SIZE;
+			n.y = Math.random() * SIM_SIZE;
+			n.vx = 0;
+			n.vy = 0;
+			n.fx = null;
+			n.fy = null;
+		}
+		reheat();
+	}
+
 	function toggleFilter() {
 		showOnlyLinked = !showOnlyLinked;
+		// Entirely reset the display, zoom, and physics — not just reheat —
+		// so switching between "all notes" and "only linked" always starts
+		// from a clean slate instead of continuing the previous layout.
+		resetPhysics();
+		sidebarView.userAdjusted = false;
+		modalView.userAdjusted = false;
+		fitView(sidebarView, true);
+		if (expanded) fitView(modalView, true);
 	}
 
 	// ── Rendering ────────────────────────────────────────────────────────────
@@ -334,25 +432,45 @@
 			}
 		}
 
-		// Decide which nodes get a label this frame: always current + hovered,
-		// and — in the big (modal) view only — every note closest to the
-		// current one (its direct neighbors), per requirement (3).
+		// Label mode: in the big view with "all notes" shown, every note's
+		// name visibility depends on how many links it has (more links =
+		// more visible at the default zoom, zero links = invisible), and
+		// zooming in gradually reveals everyone regardless of link count.
+		// Otherwise: just current + hovered, plus direct neighbors too when
+		// the big view is filtered down to them.
+		const degreeFade = isModal && !showOnlyLinked;
+		const zoomRatio = view.fitScale > 0 ? view.scale / view.fitScale : 1;
+		// 0 once at (or below) the default fit scale, growing as you zoom in.
+		const zoomBoost = Math.max(0, zoomRatio - 1) * 0.5;
+
 		const labelIds = new Set<string>();
-		for (const n of nodes) {
-			if (visibleIds && !visibleIds.has(n.id)) continue;
-			const isCurrent = n.id === currentPath;
-			const isHovered = n.id === view.hoveredId;
-			const isNearCurrent = isModal && neighborIds.has(n.id);
-			if (isCurrent || isHovered || isNearCurrent) labelIds.add(n.id);
+		if (!degreeFade) {
+			for (const n of nodes) {
+				if (visibleIds && !visibleIds.has(n.id)) continue;
+				const isCurrent = n.id === currentPath;
+				const isHovered = n.id === view.hoveredId;
+				const isNearCurrent = isModal && neighborIds.has(n.id);
+				if (isCurrent || isHovered || isNearCurrent) labelIds.add(n.id);
+			}
 		}
-		// (4): the more names would be drawn at once, the more transparent
-		// each one is, so a heavily-connected note's neighbor labels don't
-		// turn into an unreadable block of overlapping text — but never so
-		// transparent they stop being "permanently visible" (3).
+		// The more names would be drawn at once, the more transparent each
+		// one is, so a heavily-connected note's neighbor labels don't turn
+		// into an unreadable block of overlapping text — but never so
+		// transparent they stop being "permanently visible".
 		const labelAlpha = Math.max(
 			0.55,
 			Math.min(1, 10 / Math.max(labelIds.size, 1)),
 		);
+
+		/** Returns null when this node shouldn't get a label at all. */
+		function getLabelAlpha(n: GNode): number | null {
+			if (degreeFade) {
+				const degreeComponent = Math.min(n.degree, 8) / 8; // 0..1
+				const a = Math.min(1, degreeComponent * 0.85 + zoomBoost);
+				return a <= 0.03 ? null : a;
+			}
+			return labelIds.has(n.id) ? labelAlpha : null;
+		}
 
 		// Edges — (1) always visible: a solid base opacity that never fades
 		// toward nothing, only brightened further when connected to the
@@ -364,9 +482,7 @@
 			if (visibleIds && !(visibleIds.has(s.id) && visibleIds.has(t.id)))
 				continue;
 			const isHighlighted =
-				!!hovered &&
-				linkedToHovered.has(s.id) &&
-				linkedToHovered.has(t.id);
+				!!hovered && (s.id === hovered.id || t.id === hovered.id);
 			ctx.strokeStyle = isHighlighted ? colorActive : colorEdge;
 			ctx.globalAlpha = isHighlighted ? 1 : 0.65;
 			ctx.lineWidth = (isHighlighted ? 1.8 : 1.1) / view.scale;
@@ -377,7 +493,8 @@
 		}
 
 		// Nodes — draw the current note LAST (in its own pass) so it always
-		// sits on top of everything else, bigger and with a halo (5).
+		// sits on top of everything else, with a halo — but sized the same
+		// as everyone else, purely by degree (not because it's "the" note).
 		let currentNode: GNode | null = null;
 		for (const n of nodes) {
 			if (visibleIds && !visibleIds.has(n.id)) continue;
@@ -388,6 +505,7 @@
 			}
 			const isHovered = n.id === view.hoveredId;
 			const dimmed = !!hovered && !linkedToHovered.has(n.id);
+			// Size depends only on how many links a note has.
 			const r = (3.5 + Math.min(n.degree, 6) * 0.55) / view.scale;
 
 			ctx.globalAlpha = dimmed ? 0.35 : 1;
@@ -402,10 +520,9 @@
 				ctx.stroke();
 			}
 
-			if (labelIds.has(n.id)) {
-				ctx.globalAlpha = dimmed
-					? Math.min(labelAlpha, 0.35)
-					: labelAlpha;
+			const labelA = getLabelAlpha(n);
+			if (labelA !== null) {
+				ctx.globalAlpha = dimmed ? Math.min(labelA, 0.35) : labelA;
 				ctx.font = `${11 / view.scale}px system-ui, sans-serif`;
 				ctx.fillStyle = colorLabel;
 				ctx.fillText(
@@ -417,7 +534,10 @@
 		}
 
 		if (currentNode && (!visibleIds || visibleIds.has(currentNode.id))) {
-			const r = 8.5 / view.scale;
+			// Same size formula as every other node — only the color and
+			// halo mark it as "you are here", not an oversized radius.
+			const r =
+				(3.5 + Math.min(currentNode.degree, 6) * 0.55) / view.scale;
 			// Halo: soft glow behind the node so it reads as "the" focal point.
 			ctx.globalAlpha = 0.28;
 			ctx.beginPath();
@@ -452,18 +572,35 @@
 	let rafId = 0;
 	function tick() {
 		try {
-			const settling = alpha > ALPHA_MIN;
-			if (settling || modalView.dragNode || sidebarView.dragNode) {
-				step();
+			// Always run: alpha has a small floor (never hits exactly 0) and
+			// the minimum-separation constraint must hold permanently, not
+			// just while "settling" — see (2) and (3).
+			step();
+			enforceSeparation();
+
+			const stillMoving = alpha > 0.02;
+
+			if (standalone) {
+				// Full-page mode: only the big view exists, always active.
+				if (stillMoving && !modalView.dragNode) fitView(modalView);
+				draw(modalView, true);
+			} else {
+				// Keep the default (non-user-adjusted) view fitted to every
+				// node while the layout is still moving into place (3) —
+				// but never while that view's own drag is in progress, or
+				// dragging a node out of frame would resize/pan the window (2).
+				if (!expanded && stillMoving && !sidebarView.dragNode) {
+					fitView(sidebarView);
+				}
+				if (expanded && stillMoving && !modalView.dragNode) {
+					fitView(modalView);
+				}
+				// The small preview is disabled while the big view is open —
+				// no point drawing/hit-testing a view the user can't
+				// interact with anyway (it sits behind the modal backdrop).
+				if (!expanded) draw(sidebarView, false);
+				else draw(modalView, true);
 			}
-			// Keep the default (non-user-adjusted) view fitted to every node
-			// while the layout is still moving into place (3).
-			if (settling) {
-				fitView(sidebarView);
-				if (expanded) fitView(modalView);
-			}
-			draw(sidebarView, false);
-			if (expanded) draw(modalView, true);
 		} catch (err) {
 			// Never let one bad frame permanently kill the whole graph —
 			// log it so it's visible in the browser console, but keep
@@ -677,17 +814,19 @@
 			// navigated to — whether that came from clicking a node in the
 			// graph or any other kind of navigation.
 			reheat();
-			centerOnCurrent(sidebarView);
+			if (!standalone) centerOnCurrent(sidebarView);
 			centerOnCurrent(modalView);
 		});
 
-		sidebarView.canvas = sidebarCanvasEl;
-		sidebarResizeObserver = new ResizeObserver(() => {
-			sidebarView.width = sidebarWrapEl.clientWidth;
-			sidebarView.height = sidebarWrapEl.clientHeight;
-			fitView(sidebarView); // respects a manual zoom, if any (2)
-		});
-		sidebarResizeObserver.observe(sidebarWrapEl);
+		if (!standalone) {
+			sidebarView.canvas = sidebarCanvasEl;
+			sidebarResizeObserver = new ResizeObserver(() => {
+				sidebarView.width = sidebarWrapEl.clientWidth;
+				sidebarView.height = sidebarWrapEl.clientHeight;
+				fitView(sidebarView); // respects a manual zoom, if any (2)
+			});
+			sidebarResizeObserver.observe(sidebarWrapEl);
+		}
 
 		rafId = requestAnimationFrame(tick);
 	});
@@ -698,10 +837,12 @@
 		if (rafId) cancelAnimationFrame(rafId);
 	});
 
-	// Set up (and tear down) the modal's own canvas + resize observer only
-	// while it actually exists in the DOM.
+	// Set up (and tear down) the big view's own canvas + resize observer
+	// whenever it's actually on screen — either the popup modal is open, or
+	// this component is being used in standalone (full-page) mode.
 	$effect(() => {
-		if (!expanded || !modalWrapEl || !modalCanvasEl) return;
+		const active = standalone || expanded;
+		if (!active || !modalWrapEl || !modalCanvasEl) return;
 		modalView.canvas = modalCanvasEl;
 		modalView.userAdjusted = false;
 		const ro = new ResizeObserver(() => {
@@ -716,10 +857,10 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="graph-wrap">
-	<div class="graph-header">
-		<span class="graph-title">Graph view</span>
-		<div class="graph-header-actions">
+{#if standalone}
+	<div class="graph-page">
+		<div class="graph-page-header">
+			<span class="graph-title">Graph view</span>
 			<button
 				class="clickable-icon"
 				class:is-active={showOnlyLinked}
@@ -745,120 +886,193 @@
 					/>
 				</svg>
 			</button>
-			<button
-				class="clickable-icon"
-				title="Expand graph view"
-				aria-label="Expand graph view"
-				onclick={openModal}
-			>
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					class="svg-icon"
+		</div>
+		<div class="graph-page-canvas-wrap" bind:this={modalWrapEl}>
+			<canvas
+				bind:this={modalCanvasEl}
+				class="graph-modal-canvas"
+				onpointerdown={handleModalPointerDown}
+				onpointermove={handleModalPointerMove}
+				onpointerup={handleModalPointerUp}
+				onpointerleave={handleModalPointerUp}
+				onwheel={handleModalWheel}
+			></canvas>
+			<div class="graph-modal-hint">
+				Scroll to zoom · drag background to pan · drag a node to move it
+				· click a node to open it
+			</div>
+		</div>
+	</div>
+{:else}
+	<div class="graph-wrap">
+		<div class="graph-header">
+			<span class="graph-title">Graph view</span>
+			<div class="graph-header-actions">
+				<button
+					class="clickable-icon"
+					class:is-active={showOnlyLinked}
+					title={showOnlyLinked
+						? "Show all notes"
+						: "Show only notes linked to the current one"}
+					aria-label="Toggle showing only linked notes"
+					onclick={toggleFilter}
 				>
-					<path d="M15 3h6v6" /><path d="M9 21H3v-6" /><path
-						d="M21 3l-7 7"
-					/><path d="M3 21l7-7" />
-				</svg>
-			</button>
+					<svg
+						xmlns="http://www.w3.org/2000/svg"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						class="svg-icon"
+					>
+						<polygon
+							points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
+							fill="none"
+						/>
+					</svg>
+				</button>
+				<button
+					class="clickable-icon"
+					title="Expand graph view"
+					aria-label="Expand graph view"
+					onclick={openModal}
+				>
+					<svg
+						xmlns="http://www.w3.org/2000/svg"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						class="svg-icon"
+					>
+						<path d="M15 3h6v6" /><path d="M9 21H3v-6" /><path
+							d="M21 3l-7 7"
+						/><path d="M3 21l7-7" />
+					</svg>
+				</button>
+			</div>
+		</div>
+		<div
+			class="graph-canvas-wrap"
+			class:is-disabled={expanded}
+			bind:this={sidebarWrapEl}
+		>
+			<canvas
+				bind:this={sidebarCanvasEl}
+				class="graph-canvas"
+				onpointerdown={handleSidebarPointerDown}
+				onpointermove={handleSidebarPointerMove}
+				onpointerup={handleSidebarPointerUp}
+				onpointerleave={handleSidebarLeave}
+				onwheel={handleSidebarWheel}
+			></canvas>
 		</div>
 	</div>
-	<div class="graph-canvas-wrap" bind:this={sidebarWrapEl}>
-		<canvas
-			bind:this={sidebarCanvasEl}
-			class="graph-canvas"
-			onpointerdown={handleSidebarPointerDown}
-			onpointermove={handleSidebarPointerMove}
-			onpointerup={handleSidebarPointerUp}
-			onpointerleave={handleSidebarLeave}
-			onwheel={handleSidebarWheel}
-		></canvas>
-	</div>
-</div>
 
-{#if expanded}
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="graph-modal-backdrop" onclick={closeModal}>
-		<div class="graph-modal" onclick={(e) => e.stopPropagation()}>
-			<div class="graph-modal-header">
-				<span class="graph-modal-title">Graph view</span>
-				<div class="graph-modal-actions">
-					<button
-						class="clickable-icon"
-						class:is-active={showOnlyLinked}
-						title={showOnlyLinked
-							? "Show all notes"
-							: "Show only notes linked to the current one"}
-						aria-label="Toggle showing only linked notes"
-						onclick={toggleFilter}
-					>
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							class="svg-icon"
+	{#if expanded}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="graph-modal-backdrop" onclick={closeModal}>
+			<div class="graph-modal" onclick={(e) => e.stopPropagation()}>
+				<div class="graph-modal-header">
+					<span class="graph-modal-title">Graph view</span>
+					<div class="graph-modal-actions">
+						<button
+							class="clickable-icon"
+							class:is-active={showOnlyLinked}
+							title={showOnlyLinked
+								? "Show all notes"
+								: "Show only notes linked to the current one"}
+							aria-label="Toggle showing only linked notes"
+							onclick={toggleFilter}
 						>
-							<polygon
-								points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
+							<svg
+								xmlns="http://www.w3.org/2000/svg"
+								viewBox="0 0 24 24"
 								fill="none"
-							/>
-						</svg>
-					</button>
-					<button
-						class="clickable-icon"
-						title="Close"
-						aria-label="Close graph view"
-						onclick={closeModal}
-					>
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							class="svg-icon"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								class="svg-icon"
+							>
+								<polygon
+									points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
+									fill="none"
+								/>
+							</svg>
+						</button>
+						<button
+							class="clickable-icon"
+							title="Close"
+							aria-label="Close graph view"
+							onclick={closeModal}
 						>
-							<line x1="18" y1="6" x2="6" y2="18" /><line
-								x1="6"
-								y1="6"
-								x2="18"
-								y2="18"
-							/>
-						</svg>
-					</button>
+							<svg
+								xmlns="http://www.w3.org/2000/svg"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								class="svg-icon"
+							>
+								<line x1="18" y1="6" x2="6" y2="18" /><line
+									x1="6"
+									y1="6"
+									x2="18"
+									y2="18"
+								/>
+							</svg>
+						</button>
+					</div>
 				</div>
-			</div>
-			<div class="graph-modal-canvas-wrap" bind:this={modalWrapEl}>
-				<canvas
-					bind:this={modalCanvasEl}
-					class="graph-modal-canvas"
-					onpointerdown={handleModalPointerDown}
-					onpointermove={handleModalPointerMove}
-					onpointerup={handleModalPointerUp}
-					onpointerleave={handleModalPointerUp}
-					onwheel={handleModalWheel}
-				></canvas>
-				<div class="graph-modal-hint">
-					Scroll to zoom · drag background to pan · drag a node to
-					move it · click a node to open it
+				<div class="graph-modal-canvas-wrap" bind:this={modalWrapEl}>
+					<canvas
+						bind:this={modalCanvasEl}
+						class="graph-modal-canvas"
+						onpointerdown={handleModalPointerDown}
+						onpointermove={handleModalPointerMove}
+						onpointerup={handleModalPointerUp}
+						onpointerleave={handleModalPointerUp}
+						onwheel={handleModalWheel}
+					></canvas>
+					<div class="graph-modal-hint">
+						Scroll to zoom · drag background to pan · drag a node to
+						move it · click a node to open it
+					</div>
 				</div>
 			</div>
 		</div>
-	</div>
+	{/if}
 {/if}
 
 <style>
+	.graph-page {
+		height: 100%;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.graph-page-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 10px 14px;
+		border-bottom: 1px solid var(--background-modifier-border);
+		flex-shrink: 0;
+	}
+
+	.graph-page-canvas-wrap {
+		position: relative;
+		flex: 1;
+		overflow: hidden;
+	}
+
 	.graph-wrap {
 		padding: 8px 10px 4px;
 	}
@@ -893,6 +1107,11 @@
 		border-radius: 6px;
 		overflow: hidden;
 		background: var(--background-primary-alt, var(--background-primary));
+	}
+
+	.graph-canvas-wrap.is-disabled {
+		opacity: 0.4;
+		pointer-events: none;
 	}
 
 	.graph-canvas {
