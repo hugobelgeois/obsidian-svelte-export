@@ -22,9 +22,15 @@ export function ensureSvelteProject(
 	vaultPath: string,
 	selectedTheme = "",
 ): boolean {
+	// The `--template minimal` scaffold from `sv create` doesn't emit a
+	// svelte.config.js — kit options (adapter, prerender, …) are configured
+	// inline in vite.config.ts instead — so that's what marks an
+	// already-initialised project. (A stale check against svelte.config.js
+	// here would never find it and re-run `sv create` against an already
+	// populated, non-empty destRoot every single export, which fails.)
 	const isSvelteProject =
-		fs.existsSync(path.join(destRoot, "svelte.config.js")) ||
-		fs.existsSync(path.join(destRoot, "svelte.config.ts"));
+		fs.existsSync(path.join(destRoot, "vite.config.ts")) ||
+		fs.existsSync(path.join(destRoot, "vite.config.js"));
 
 	if (!isSvelteProject) {
 		new Notice("🔧 No SvelteKit project detected — running npx sv create…");
@@ -53,6 +59,8 @@ export function ensureSvelteProject(
 				removeIfExists(path.join(destRoot, name));
 			}
 
+			patchPrerenderErrorHandling(destRoot);
+
 			new Notice("✅ SvelteKit project initialised.");
 		} catch (e) {
 			console.error("[SvelteExporter] sv create failed:", e);
@@ -80,6 +88,49 @@ export function ensureSvelteProject(
 
 	copyPluginFiles(destRoot, pluginDir, vaultPath, selectedTheme);
 	return true;
+}
+
+/**
+ * A vault this size will always have a few dead wikilinks or missing
+ * embeds. By default SvelteKit's prerender crawler treats any broken link
+ * it finds as a fatal error and aborts the whole build, producing no
+ * output at all. Patch the freshly generated vite.config.ts to log those
+ * as warnings instead so one bad link can't block the entire export.
+ *
+ * Only runs right after `sv create` (see call site) where the file's
+ * shape is known; if a future `sv create` template changes it, this is
+ * skipped rather than risking a broken vite.config.ts.
+ */
+function patchPrerenderErrorHandling(destRoot: string): void {
+	const viteConfigPath = path.join(destRoot, "vite.config.ts");
+	if (!fs.existsSync(viteConfigPath)) return;
+
+	const original = fs.readFileSync(viteConfigPath, "utf-8");
+	if (original.includes("prerender:")) return; // already patched
+
+	const marker = "adapter: adapter()";
+	if (!original.includes(marker)) {
+		console.warn(
+			"[SvelteExporter] vite.config.ts didn't match the expected sv create " +
+				"template — skipping the prerender-error-handling patch. " +
+				"A broken wikilink/embed may abort `npm run build`.",
+		);
+		return;
+	}
+
+	const patched = original.replace(
+		marker,
+		`${marker},\n\n` +
+			`\t\t\t// A vault this size will always have a few dead wikilinks or\n` +
+			`\t\t\t// missing embeds — don't let one broken link abort the entire\n` +
+			`\t\t\t// export. Log it and keep prerendering everything else.\n` +
+			`\t\t\tprerender: {\n` +
+			`\t\t\t\thandleHttpError: ({ message }) => {\n` +
+			`\t\t\t\t\tconsole.warn(\`[prerender] \${message}\`);\n` +
+			`\t\t\t\t}\n` +
+			`\t\t\t}`,
+	);
+	fs.writeFileSync(viteConfigPath, patched, "utf-8");
 }
 
 // ── Plugin-owned file copier ───────────────────────────────────────────────

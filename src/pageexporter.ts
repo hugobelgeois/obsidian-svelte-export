@@ -314,6 +314,7 @@ function markdownToSvelte(
 	const { meta, body: rawBody } = parseFrontMatter(markdown);
 	const pageTitle = meta["title"] || title;
 	const pageDescription = meta["description"] || "";
+	const isFullWidth = meta["full-width"]?.trim().toLowerCase() === "true";
 
 	// Pre-process wikilinks before splitting into sections
 	const linkedRoutes = new Set<string>();
@@ -379,6 +380,7 @@ export const prerender = true;
 export const load: PageLoad = () => ({
   pageTitle: ${JSON.stringify(pageTitle)},
   pageDescription: ${JSON.stringify(pageDescription)},
+  fullBleed: ${isFullWidth},
 });
 `;
 

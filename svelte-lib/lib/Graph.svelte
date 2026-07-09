@@ -6,7 +6,11 @@
 	import { onDestroy, onMount } from "svelte";
 
 	/** When true, render as a full in-page view (used as the site's default
-	 * page) instead of the small sidebar preview + popup modal. */
+	 * page) instead of the small sidebar preview + popup modal. Body.svelte
+	 * fills the page for this mode via the route's `fullBleed` load data
+	 * (see +page.ts next to the generated standalone route), not a prop
+	 * here — that data is resolved before any component renders, avoiding
+	 * the ordering issue of a child trying to signal an ancestor. */
 	let { standalone = false }: { standalone?: boolean } = $props();
 
 	// ── Types ────────────────────────────────────────────────────────────────
@@ -861,31 +865,6 @@
 	<div class="graph-page">
 		<div class="graph-page-header">
 			<span class="graph-title">Graph view</span>
-			<button
-				class="clickable-icon"
-				class:is-active={showOnlyLinked}
-				title={showOnlyLinked
-					? "Show all notes"
-					: "Show only notes linked to the current one"}
-				aria-label="Toggle showing only linked notes"
-				onclick={toggleFilter}
-			>
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					class="svg-icon"
-				>
-					<polygon
-						points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
-						fill="none"
-					/>
-				</svg>
-			</button>
 		</div>
 		<div class="graph-page-canvas-wrap" bind:this={modalWrapEl}>
 			<canvas

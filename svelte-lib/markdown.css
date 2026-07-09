@@ -20,6 +20,19 @@
   padding: var(--size-4-8, 32px) var(--size-4-6, 24px) var(--size-4-16, 64px);
 }
 
+/* Pages that opt into full-width mode (the standalone graph view, or a
+   note with `full-width: true` in its front matter) fill the sizer's
+   full width/height instead of the 700px reading-width column.
+   `!important` because .markdown-preview-sizer is a real Obsidian class
+   name — an installed theme's own app.css may also target it, and we
+   need this to win regardless of that theme's rule order/specificity. */
+.markdown-preview-sizer.full-bleed {
+  max-width: none !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
 /* ── Headings ─────────────────────────────────────────────── */
 
 .markdown-rendered h1,

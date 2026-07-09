@@ -300,7 +300,11 @@ export default class SvelteExporterPlugin extends Plugin {
 			);
 			fs.writeFileSync(
 				pageTsPath,
-				"export const prerender = true;\n",
+				"export const prerender = true;\n\n" +
+					"// Resolved before any component renders, so Body.svelte can size\n" +
+					"// the page correctly on the very first (server-rendered) paint —\n" +
+					"// unlike a store a child component would set too late.\n" +
+					"export const load = () => ({ fullBleed: true });\n",
 				"utf-8",
 			);
 			return;
