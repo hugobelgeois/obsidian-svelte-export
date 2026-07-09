@@ -329,19 +329,8 @@
 		mask-image: linear-gradient(to bottom, black 80%, transparent 100%);
 	}
 
-	.wiki-preview-content :global(h1:first-child),
-	.wiki-preview-content :global(h2:first-child),
-	.wiki-preview-content :global(h3:first-child) {
-		margin-top: 0;
-	}
-
-	.wiki-preview-content :global(img) {
-		max-width: 100%;
-		height: auto;
-		border-radius: 4px;
-		display: block;
-		margin: 0.5em auto;
-	}
+	/* First-heading/image treatment for .wiki-preview-content is shared
+	   with .wiki-embed-content in markdown.css. */
 
 	.wiki-preview-status {
 		color: var(--text-muted);

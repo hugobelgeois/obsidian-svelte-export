@@ -285,6 +285,29 @@
   font-size: 0.95em;
 }
 
+/* ── Wiki hover-preview / inline-embed content ───────────────
+   Shared by LinkPreview.svelte's hover panel and EmbedBlock.svelte's
+   inline embed — both drop fetched note HTML into a differently-named
+   wrapper via {@html}, but want identical first-heading/image treatment. */
+
+.wiki-preview-content h1:first-child,
+.wiki-preview-content h2:first-child,
+.wiki-preview-content h3:first-child,
+.wiki-embed-content h1:first-child,
+.wiki-embed-content h2:first-child,
+.wiki-embed-content h3:first-child {
+  margin-top: 0;
+}
+
+.wiki-preview-content img,
+.wiki-embed-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  display: block;
+  margin: 0.5em auto;
+}
+
 /* ── Scrollbar ───────────────────────────────────────────── */
 
 .markdown-preview-view::-webkit-scrollbar { width: 6px; }

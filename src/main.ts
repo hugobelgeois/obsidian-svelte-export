@@ -67,6 +67,25 @@ export default class SvelteExporterPlugin extends Plugin {
 
 		this.writeDefaultPage(destinationPath, files);
 
+		// ── Write graphConfig.json ───────────────────────────────────────────
+		const graphConfigPath = path.join(
+			destinationPath,
+			"src",
+			"lib",
+			"graphConfig.json",
+		);
+		fs.writeFileSync(
+			graphConfigPath,
+			JSON.stringify(
+				{
+					heartbeatSeconds: this.settings.graphHeartbeatSeconds ?? 10,
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
 		// ── Write hidden.json ──────────────────────────────────────────────
 		const hiddenRoutes = this.resolveHiddenRoutes(
 			this.settings.hiddenPaths ?? [],
@@ -90,9 +109,7 @@ export default class SvelteExporterPlugin extends Plugin {
 		// also keep their original spelling/accents instead of the
 		// sanitized route segment.
 		const nameMap: Record<string, string> = {};
-		for (const file of this.resolveFiles(
-			this.settings.selectedPaths ?? [],
-		)) {
+		for (const file of files) {
 			if (file.extension !== "md") continue;
 			nameMap["/" + sanitizeRoutePath(file.path)] = file.basename;
 
@@ -301,10 +318,13 @@ export default class SvelteExporterPlugin extends Plugin {
 			fs.writeFileSync(
 				pageTsPath,
 				"export const prerender = true;\n\n" +
-					"// Resolved before any component renders, so Body.svelte can size\n" +
-					"// the page correctly on the very first (server-rendered) paint —\n" +
-					"// unlike a store a child component would set too late.\n" +
-					"export const load = () => ({ fullBleed: true });\n",
+					"// Resolved before any component renders, so Body.svelte and\n" +
+					"// +layout.svelte can size/lay out the page correctly on the very\n" +
+					"// first (server-rendered) paint — unlike a store a child component\n" +
+					"// would set too late. isGraphPage (distinct from fullBleed, which a\n" +
+					"// full-width note also sets) is what tells +layout.svelte to hide\n" +
+					"// the right sidebar's own redundant mini-graph on this route.\n" +
+					"export const load = () => ({ fullBleed: true, isGraphPage: true });\n",
 				"utf-8",
 			);
 			return;

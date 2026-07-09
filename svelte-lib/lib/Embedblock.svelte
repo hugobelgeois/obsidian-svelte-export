@@ -59,19 +59,8 @@
 		user-select: none;
 	}
 
-	.wiki-embed-content :global(h1:first-child),
-	.wiki-embed-content :global(h2:first-child),
-	.wiki-embed-content :global(h3:first-child) {
-		margin-top: 0;
-	}
-
-	.wiki-embed-content :global(img) {
-		max-width: 100%;
-		height: auto;
-		border-radius: 4px;
-		display: block;
-		margin: 0.5em auto;
-	}
+	/* First-heading/image treatment for .wiki-embed-content is shared
+	   with .wiki-preview-content in markdown.css. */
 
 	.wiki-embed-status {
 		color: var(--text-muted);

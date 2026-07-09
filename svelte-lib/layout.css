@@ -162,6 +162,14 @@ a { text-decoration: none; color: inherit; }
   background: var(--background-modifier-hover);
 }
 
+/* Keyboard-navigation focus ring — visible on Tab, not on mouse click. */
+.clickable-icon:focus-visible,
+.sidebar-reveal-btn:focus-visible,
+.tree-item-self:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
 .svg-icon {
   width: 16px;
   height: 16px;
@@ -278,4 +286,28 @@ a { text-decoration: none; color: inherit; }
 
   .workspace-split.mod-left-split:not(.is-collapsed) { left: 0; }
   .workspace-split.mod-right-split:not(.is-collapsed) { right: 0; }
+
+  /* Bigger tap targets — 28px is fine for a mouse pointer but small for a
+     finger (below the ~44px platforms recommend). */
+  .clickable-icon,
+  .sidebar-reveal-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .tree-item-self {
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+
+  /* .sidebar-reveal-btn grew to 40px above — give the reserved clearance
+     (set unconditionally near the top of this file) room to match. */
+  .workspace:has(.workspace-split.mod-sidedock.is-collapsed) .workspace-split.mod-root {
+    padding-top: 56px;
+  }
+
+  /* iOS Safari zooms the whole page in on focus for any input under 16px. */
+  .search-input {
+    font-size: 16px;
+  }
 }

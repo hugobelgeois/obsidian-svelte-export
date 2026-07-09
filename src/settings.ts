@@ -23,6 +23,9 @@ export interface SvelteExporterSettings {
 	// "" = welcome screen (default), "__graph__" = graph view as a full page,
 	// else a vault file path (from selectedPaths) to redirect "/" to.
 	defaultPage: string;
+	// Seconds between graph-view "heartbeat" pulses (nodes nudge outward
+	// from the center/selected note, then spring back). 0 = disabled.
+	graphHeartbeatSeconds: number;
 }
 
 export const DEFAULT_SETTINGS: SvelteExporterSettings = {
@@ -34,6 +37,7 @@ export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	customCssPath: "",
 	selectedTheme: "__none__",
 	defaultPage: "",
+	graphHeartbeatSeconds: 10,
 };
 
 // SVG icons for the eye toggle
@@ -45,6 +49,10 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 
 	// Persist expanded state across re-renders: path → boolean
 	private expandedFolders = new Set<string>();
+	// Paths recorded in .export-cache.json — i.e. already exported and
+	// up-to-date as of the last run. Populated in display(), read by
+	// renderFileNode() to show the "✓" indicator.
+	private cachedPaths = new Set<string>();
 
 	constructor(app: App, plugin: SvelteExporterPlugin) {
 		super(app, plugin);
@@ -110,8 +118,8 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 										],
 									},
 								);
-							if (result && result.length > 0) {
-								const chosen = result[0];
+							const chosen = result?.[0];
+							if (chosen) {
 								this.plugin.settings.destinationPath = chosen;
 								this.plugin.saveSettings();
 								const textCmp = (this as any)
@@ -234,10 +242,32 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				});
 			});
 
+		new Setting(containerEl)
+			.setName("Graph heartbeat interval")
+			.setDesc(
+				"In the graph view, seconds between a subtle \"heartbeat\": " +
+					"nodes nudge outward from the center (or, in the popup " +
+					"view, from the currently open note) and spring back. " +
+					"0 disables it.",
+			)
+			.addText((text) => {
+				text
+					.setPlaceholder("10")
+					.setValue(String(this.plugin.settings.graphHeartbeatSeconds))
+					.onChange(async (value) => {
+						const n = Math.max(0, Math.round(Number(value)));
+						this.plugin.settings.graphHeartbeatSeconds =
+							Number.isFinite(n) ? n : 0;
+						await this.plugin.saveSettings();
+					});
+				text.inputEl.type = "number";
+				text.inputEl.min = "0";
+			});
+
 		// ── Export cache ──────────────────────────────────────────────────
 		containerEl.createEl("h3", { text: "Export cache" });
 
-		let cacheSize = 0;
+		this.cachedPaths = new Set();
 		const cacheFile = this.plugin.settings.destinationPath
 			? require("path").join(
 					this.plugin.settings.destinationPath,
@@ -249,11 +279,12 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				const data = JSON.parse(
 					require("fs").readFileSync(cacheFile, "utf-8"),
 				);
-				cacheSize = Object.keys(data).length;
+				this.cachedPaths = new Set(Object.keys(data));
 			} catch {
 				/* ignore */
 			}
 		}
+		const cacheSize = this.cachedPaths.size;
 
 		new Setting(containerEl)
 			.setName("Clear export cache")
@@ -436,7 +467,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		const labelWrap = row.createSpan({ cls: "svelte-exporter-label" });
 		const isImage = IMAGE_EXTENSIONS.has(file.extension);
 		const icon = isImage ? "🖼️" : "📄";
-		const isCached = !!this.plugin.settings.exportCache?.[file.path];
+		const isCached = this.cachedPaths.has(file.path);
 		const span = labelWrap.createSpan({
 			text: `${icon} ${file.basename}${isCached ? " ✓" : ""}`,
 		});

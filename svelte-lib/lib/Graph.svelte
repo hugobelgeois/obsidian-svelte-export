@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from "$app/navigation";
 	import { page } from "$app/stores";
+	import { HEARTBEAT_SECONDS } from "$lib/graphConfig";
 	import { getLinkEdges } from "$lib/linkGraph";
 	import { flattenTree, siteTree } from "$lib/siteTree";
 	import { onDestroy, onMount } from "svelte";
@@ -26,6 +27,15 @@
 		fx: number | null;
 		fy: number | null;
 		degree: number;
+		/** Progressive reveal (standalone page only — see revealOrder below).
+		 * Always true outside standalone mode. */
+		revealed: boolean;
+		/** Timestamp (performance.now()) revealed became true; drives the
+		 * pop-in fade/scale. Null once the fade has fully finished. */
+		revealedAt: number | null;
+		/** Animated toward 1 (normal) or 0.35 (dimmed, hovering elsewhere) —
+		 * eased over time instead of snapping, see DIM_TAU_MS. */
+		dimAlpha: number;
 	}
 	interface GLink {
 		source: string;
@@ -89,6 +99,11 @@
 		fx: null,
 		fy: null,
 		degree: 0,
+		// Standalone starts every node hidden and reveals them progressively
+		// (see revealOrder below); every other mode shows everything at once.
+		revealed: !standalone,
+		revealedAt: null,
+		dimAlpha: 1,
 	}));
 
 	const nodeIndex = new Map<string, GNode>(nodes.map((n) => [n.id, n]));
@@ -103,6 +118,153 @@
 	for (const l of links) {
 		nodeIndex.get(l.source)!.degree++;
 		nodeIndex.get(l.target)!.degree++;
+	}
+
+	// ── Progressive reveal (standalone page only) ───────────────────────────
+	// Order: the most-connected node first, then its neighbors (breadth-
+	// first, each frontier visited most-connected-first), so the reveal
+	// grows outward from each "hub" the same way the eye would explore the
+	// graph. Once a whole connected component is exhausted, jump to the
+	// next most-connected node not yet reached (covers disconnected notes).
+	function computeRevealOrder(): string[] {
+		const adjacency = new Map<string, string[]>();
+		for (const n of nodes) adjacency.set(n.id, []);
+		for (const l of links) {
+			adjacency.get(l.source)?.push(l.target);
+			adjacency.get(l.target)?.push(l.source);
+		}
+
+		const byDegreeDesc = [...nodes].sort((a, b) => b.degree - a.degree);
+		const visited = new Set<string>();
+		const order: string[] = [];
+
+		for (const start of byDegreeDesc) {
+			if (visited.has(start.id)) continue;
+			const queue: string[] = [start.id];
+			visited.add(start.id);
+			while (queue.length) {
+				const id = queue.shift()!;
+				order.push(id);
+				const neighbors = (adjacency.get(id) ?? [])
+					.filter((nid) => !visited.has(nid))
+					.sort(
+						(a, b) =>
+							(nodeIndex.get(b)?.degree ?? 0) -
+							(nodeIndex.get(a)?.degree ?? 0),
+					);
+				for (const nid of neighbors) {
+					visited.add(nid);
+					queue.push(nid);
+				}
+			}
+		}
+		return order;
+	}
+
+	const revealOrder: string[] = standalone ? computeRevealOrder() : [];
+	// Stagger tuned so a small vault reveals briskly and a huge one doesn't
+	// take forever — capped total runtime, floored per-node step.
+	const REVEAL_STEP_MS = Math.max(
+		25,
+		Math.min(70, 4000 / Math.max(revealOrder.length, 1)),
+	);
+	const REVEAL_FADE_MS = 320;
+	let revealCursor = 0;
+	let nextRevealAt = 0;
+
+	function revealEase(n: GNode, now: number): number {
+		if (!n.revealed) return 0;
+		if (n.revealedAt === null) return 1;
+		const t = Math.min(1, (now - n.revealedAt) / REVEAL_FADE_MS);
+		if (t >= 1) return 1;
+		return 1 - Math.pow(1 - t, 3); // ease-out cubic "pop"
+	}
+
+	// ── Heartbeat shockwave (standalone page + popup modal) ─────────────────
+	// A purely visual, physics-independent nudge: an expanding wavefront
+	// travels outward from an origin at a finite speed, and each node only
+	// gets its own brief push-then-return once the wavefront actually
+	// reaches it — not all nodes moving in lockstep. The underlying
+	// simulation x/y never change, so there's no risk of the layout
+	// actually drifting.
+	const HEARTBEAT_WAVE_SPEED = 0.22; // sim-space units per ms the wavefront travels
+	const HEARTBEAT_PUSH_MS = 380; // gentle rise to the crest
+	const HEARTBEAT_RETURN_MS = 1400; // slower, gentle settle back to rest
+	const HEARTBEAT_LOCAL_MS = HEARTBEAT_PUSH_MS + HEARTBEAT_RETURN_MS;
+	const HEARTBEAT_MAX_PUSH = 4; // px at the peak, right where the wavefront currently is
+
+	/** Zero velocity at both t=0 and t=1 — a soft start and a soft arrival,
+	 * unlike a plain quadratic ease which still "snaps" into motion. */
+	function smoothstep(t: number): number {
+		const c = Math.min(1, Math.max(0, t));
+		return c * c * (3 - 2 * c);
+	}
+	let heartbeatOrigin: { x: number; y: number } | null = null;
+	let heartbeatStartTime = 0;
+	/** How long the wave stays relevant for — time to reach the farthest
+	 * node, plus one local push-and-return. Computed per-trigger from actual
+	 * node distances so it always fully clears the graph regardless of layout. */
+	let heartbeatActiveMs = 0;
+	let nextHeartbeatAt = 0; // 0 = not yet scheduled
+
+	function triggerHeartbeat(origin: { x: number; y: number }) {
+		heartbeatOrigin = origin;
+		heartbeatStartTime = performance.now();
+		let maxDist = 0;
+		for (const n of nodes) {
+			const dx = n.x - origin.x;
+			const dy = n.y - origin.y;
+			const d = Math.sqrt(dx * dx + dy * dy);
+			if (d > maxDist) maxDist = d;
+		}
+		heartbeatActiveMs = maxDist / HEARTBEAT_WAVE_SPEED + HEARTBEAT_LOCAL_MS;
+	}
+
+	/** 0 → 1 over the gentle rise, then 1 → 0 over the much slower return —
+	 * smoothstep on both legs means the crest itself is rounded (zero
+	 * velocity where rise meets return) instead of a sharp point, and the
+	 * whole thing starts and ends completely at rest — a rolling swell
+	 * rather than a jolt. */
+	function pulseEnvelope(local: number): number {
+		if (local < HEARTBEAT_PUSH_MS) {
+			return smoothstep(local / HEARTBEAT_PUSH_MS);
+		}
+		const t = (local - HEARTBEAT_PUSH_MS) / HEARTBEAT_RETURN_MS;
+		return 1 - smoothstep(t);
+	}
+
+	/** Visual-only offset for `n` at time `now` — does not touch n.x/n.y. */
+	function heartbeatOffset(n: GNode, now: number): { dx: number; dy: number } {
+		if (!heartbeatOrigin) return { dx: 0, dy: 0 };
+		const elapsed = now - heartbeatStartTime;
+		if (elapsed < 0 || elapsed > heartbeatActiveMs) return { dx: 0, dy: 0 };
+
+		const ddx = n.x - heartbeatOrigin.x;
+		const ddy = n.y - heartbeatOrigin.y;
+		const dist = Math.sqrt(ddx * ddx + ddy * ddy) || 1;
+
+		// The wavefront reaches this node at `arrival`; its own push-and-
+		// return happens in the HEARTBEAT_LOCAL_MS window after that — this
+		// is what makes it a traveling wave rather than a synchronized
+		// pulse: two nodes at different distances peak at different times.
+		const arrival = dist / HEARTBEAT_WAVE_SPEED;
+		const local = elapsed - arrival;
+		if (local < 0 || local > HEARTBEAT_LOCAL_MS) return { dx: 0, dy: 0 };
+
+		const push = HEARTBEAT_MAX_PUSH * pulseEnvelope(local);
+		return { dx: (ddx / dist) * push, dy: (ddy / dist) * push };
+	}
+
+	// ── Hover dimming (eased, not instant) ──────────────────────────────────
+	// Frame-rate-independent exponential smoothing: after DIM_TAU_MS
+	// milliseconds, dimAlpha has closed ~63% of the gap to its target; after
+	// 3× that (~0.5–1s total, per DIM_TAU_MS below) it's visually settled.
+	const DIM_TAU_MS = 250;
+	let lastDimFrameTime = 0;
+
+	function updateDimAlpha(n: GNode, target: number, dt: number) {
+		const k = 1 - Math.exp(-dt / DIM_TAU_MS);
+		n.dimAlpha += (target - n.dimAlpha) * k;
 	}
 
 	// ── Physics (continuous, animated — settles instead of blocking once) ──
@@ -274,6 +436,35 @@
 		}
 	}
 
+	/**
+	 * Smooth, local-only push away from an actively dragged node — this is
+	 * what makes nearby nodes drift out of the way while dragging, without
+	 * relying on reheat()'s global alpha (which would reactivate forces for
+	 * every pair in the graph, not just around the drag). Unlike
+	 * enforceSeparation()'s hard MIN_SEPARATION cutoff (nothing, then a
+	 * sudden snap at an exact radius), this fades continuously to zero — no
+	 * boundary to see. Added to velocity, not position, so the normal
+	 * damping in step() carries it into an organic decelerate-and-settle
+	 * instead of an instant nudge.
+	 */
+	const DRAG_PUSH_RADIUS = 27; // sim-units — well past this, effectively zero
+	const DRAG_PUSH_STRENGTH = 3.5;
+
+	function applyDragRepulsion(dragNode: GNode) {
+		for (const n of nodes) {
+			if (n === dragNode || n.fx !== null) continue;
+			const dx = n.x - dragNode.x;
+			const dy = n.y - dragNode.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			if (dist >= DRAG_PUSH_RADIUS || dist < 0.001) continue;
+			const t = dist / DRAG_PUSH_RADIUS;
+			const falloff = (1 - t) * (1 - t); // 0 at the radius edge, and flat there (no snap)
+			const force = DRAG_PUSH_STRENGTH * falloff;
+			n.vx += (dx / dist) * force;
+			n.vy += (dy / dist) * force;
+		}
+	}
+
 	// ── Views & shared display state ─────────────────────────────────────────
 
 	const sidebarView = createView();
@@ -391,10 +582,19 @@
 
 	// ── Rendering ────────────────────────────────────────────────────────────
 
-	function draw(view: View, isModal: boolean) {
+	function draw(view: View, isModal: boolean, now: number) {
 		if (!view.canvas || view.width <= 0 || view.height <= 0) return;
 		const ctx = view.canvas.getContext("2d");
 		if (!ctx) return;
+
+		// The heartbeat is a big-view-only effect (standalone page + popup
+		// modal, never the small sidebar preview) and purely visual — it
+		// never touches n.x/n.y, so this is the only place it exists.
+		function drawPos(n: GNode): { x: number; y: number } {
+			if (!isModal) return { x: n.x, y: n.y };
+			const off = heartbeatOffset(n, now);
+			return { x: n.x + off.dx, y: n.y + off.dy };
+		}
 
 		const dpr = window.devicePixelRatio || 1;
 		const targetW = Math.round(view.width * dpr);
@@ -421,6 +621,9 @@
 			style.getPropertyValue("--text-normal").trim() || "#ddd";
 		const colorBg =
 			style.getPropertyValue("--background-primary").trim() || "#1a1a1a";
+
+		const dimDt = lastDimFrameTime > 0 ? now - lastDimFrameTime : 16;
+		lastDimFrameTime = now;
 
 		const neighborIds = getCurrentNeighborIds();
 		// Filter (2): restrict to current note + its direct neighbors.
@@ -468,6 +671,10 @@
 
 		/** Returns null when this node shouldn't get a label at all. */
 		function getLabelAlpha(n: GNode): number | null {
+			// The node under the cursor always gets its full name at full
+			// opacity — degree-based fade and the "many labels at once"
+			// dimming are both about decluttering everything else, not this.
+			if (n.id === view.hoveredId) return 1;
 			if (degreeFade) {
 				const degreeComponent = Math.min(n.degree, 8) / 8; // 0..1
 				const a = Math.min(1, degreeComponent * 0.85 + zoomBoost);
@@ -483,6 +690,7 @@
 			const s = nodeIndex.get(l.source);
 			const t = nodeIndex.get(l.target);
 			if (!s || !t) continue;
+			if (!s.revealed || !t.revealed) continue;
 			if (visibleIds && !(visibleIds.has(s.id) && visibleIds.has(t.id)))
 				continue;
 			const isHighlighted =
@@ -490,9 +698,11 @@
 			ctx.strokeStyle = isHighlighted ? colorActive : colorEdge;
 			ctx.globalAlpha = isHighlighted ? 1 : 0.65;
 			ctx.lineWidth = (isHighlighted ? 1.8 : 1.1) / view.scale;
+			const sp = drawPos(s);
+			const tp = drawPos(t);
 			ctx.beginPath();
-			ctx.moveTo(s.x, s.y);
-			ctx.lineTo(t.x, t.y);
+			ctx.moveTo(sp.x, sp.y);
+			ctx.lineTo(tp.x, tp.y);
 			ctx.stroke();
 		}
 
@@ -501,6 +711,7 @@
 		// as everyone else, purely by degree (not because it's "the" note).
 		let currentNode: GNode | null = null;
 		for (const n of nodes) {
+			if (!n.revealed) continue;
 			if (visibleIds && !visibleIds.has(n.id)) continue;
 			const isCurrent = n.id === currentPath;
 			if (isCurrent) {
@@ -509,12 +720,15 @@
 			}
 			const isHovered = n.id === view.hoveredId;
 			const dimmed = !!hovered && !linkedToHovered.has(n.id);
+			updateDimAlpha(n, dimmed ? 0.35 : 1, dimDt);
+			const ease = revealEase(n, now);
 			// Size depends only on how many links a note has.
-			const r = (3.5 + Math.min(n.degree, 6) * 0.55) / view.scale;
+			const r = ((3.5 + Math.min(n.degree, 6) * 0.55) / view.scale) * ease;
+			const p = drawPos(n);
 
-			ctx.globalAlpha = dimmed ? 0.35 : 1;
+			ctx.globalAlpha = n.dimAlpha * ease;
 			ctx.beginPath();
-			ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+			ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
 			ctx.fillStyle = isHovered ? colorLabel : colorNode;
 			ctx.fill();
 
@@ -526,32 +740,34 @@
 
 			const labelA = getLabelAlpha(n);
 			if (labelA !== null) {
-				ctx.globalAlpha = dimmed ? Math.min(labelA, 0.35) : labelA;
+				ctx.globalAlpha = Math.min(labelA, n.dimAlpha) * ease;
 				ctx.font = `${11 / view.scale}px system-ui, sans-serif`;
 				ctx.fillStyle = colorLabel;
-				ctx.fillText(
-					n.label,
-					n.x + r + 4 / view.scale,
-					n.y + 4 / view.scale,
-				);
+				ctx.fillText(n.label, p.x + r + 4 / view.scale, p.y + 4 / view.scale);
 			}
 		}
 
-		if (currentNode && (!visibleIds || visibleIds.has(currentNode.id))) {
+		if (
+			currentNode?.revealed &&
+			(!visibleIds || visibleIds.has(currentNode.id))
+		) {
+			const ease = revealEase(currentNode, now);
 			// Same size formula as every other node — only the color and
 			// halo mark it as "you are here", not an oversized radius.
 			const r =
-				(3.5 + Math.min(currentNode.degree, 6) * 0.55) / view.scale;
+				((3.5 + Math.min(currentNode.degree, 6) * 0.55) / view.scale) *
+				ease;
+			const p = drawPos(currentNode);
 			// Halo: soft glow behind the node so it reads as "the" focal point.
-			ctx.globalAlpha = 0.28;
+			ctx.globalAlpha = 0.28 * ease;
 			ctx.beginPath();
-			ctx.arc(currentNode.x, currentNode.y, r * 2.2, 0, Math.PI * 2);
+			ctx.arc(p.x, p.y, r * 2.2, 0, Math.PI * 2);
 			ctx.fillStyle = colorActive;
 			ctx.fill();
 
-			ctx.globalAlpha = 1;
+			ctx.globalAlpha = ease;
 			ctx.beginPath();
-			ctx.arc(currentNode.x, currentNode.y, r, 0, Math.PI * 2);
+			ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
 			ctx.fillStyle = colorActive;
 			ctx.fill();
 			ctx.lineWidth = 2.5 / view.scale;
@@ -562,8 +778,8 @@
 			ctx.fillStyle = colorLabel;
 			ctx.fillText(
 				currentNode.label,
-				currentNode.x + r + 5 / view.scale,
-				currentNode.y + 4.5 / view.scale,
+				p.x + r + 5 / view.scale,
+				p.y + 4.5 / view.scale,
 			);
 		}
 
@@ -573,9 +789,54 @@
 
 	// ── Animation loop ───────────────────────────────────────────────────────
 
+	/** Reveals the next node in `revealOrder`, if it's due. Standalone only. */
+	function advanceReveal(now: number) {
+		if (!standalone || revealCursor >= revealOrder.length) return;
+		if (nextRevealAt === 0) nextRevealAt = now; // reveal the first node immediately
+		if (now < nextRevealAt) return;
+		const n = nodeIndex.get(revealOrder[revealCursor++]);
+		if (n) {
+			n.revealed = true;
+			n.revealedAt = now;
+		}
+		nextRevealAt = now + REVEAL_STEP_MS;
+	}
+
+	/** Schedules/fires the heartbeat pulse. Big-view-only (standalone + modal). */
+	function advanceHeartbeat(now: number, active: boolean) {
+		if (HEARTBEAT_SECONDS <= 0 || !active) {
+			nextHeartbeatAt = 0;
+			return;
+		}
+		// Standalone waits for the reveal to finish first; the popup modal
+		// has no reveal phase, so it's ready as soon as it's open.
+		const ready = standalone ? revealCursor >= revealOrder.length : true;
+		if (!ready) return;
+
+		if (nextHeartbeatAt === 0) {
+			nextHeartbeatAt = now + HEARTBEAT_SECONDS * 1000;
+			return;
+		}
+		if (now < nextHeartbeatAt) return;
+
+		const current = currentPath ? nodeIndex.get(currentPath) : null;
+		const origin =
+			!standalone && current
+				? { x: current.x, y: current.y }
+				: { x: SIM_SIZE / 2, y: SIM_SIZE / 2 };
+		triggerHeartbeat(origin);
+		nextHeartbeatAt = now + HEARTBEAT_SECONDS * 1000;
+	}
+
 	let rafId = 0;
 	function tick() {
 		try {
+			// Local, alpha-independent nudge for whichever node is actively
+			// being dragged — see applyDragRepulsion's own comment for why
+			// this isn't just reheat().
+			if (sidebarView.dragNode) applyDragRepulsion(sidebarView.dragNode);
+			if (modalView.dragNode) applyDragRepulsion(modalView.dragNode);
+
 			// Always run: alpha has a small floor (never hits exactly 0) and
 			// the minimum-separation constraint must hold permanently, not
 			// just while "settling" — see (2) and (3).
@@ -583,11 +844,14 @@
 			enforceSeparation();
 
 			const stillMoving = alpha > 0.02;
+			const now = performance.now();
+			advanceReveal(now);
 
 			if (standalone) {
 				// Full-page mode: only the big view exists, always active.
 				if (stillMoving && !modalView.dragNode) fitView(modalView);
-				draw(modalView, true);
+				advanceHeartbeat(now, true);
+				draw(modalView, true, now);
 			} else {
 				// Keep the default (non-user-adjusted) view fitted to every
 				// node while the layout is still moving into place (3) —
@@ -599,11 +863,12 @@
 				if (expanded && stillMoving && !modalView.dragNode) {
 					fitView(modalView);
 				}
+				advanceHeartbeat(now, expanded);
 				// The small preview is disabled while the big view is open —
 				// no point drawing/hit-testing a view the user can't
 				// interact with anyway (it sits behind the modal backdrop).
-				if (!expanded) draw(sidebarView, false);
-				else draw(modalView, true);
+				if (!expanded) draw(sidebarView, false, now);
+				else draw(modalView, true, now);
 			}
 		} catch (err) {
 			// Never let one bad frame permanently kill the whole graph —
@@ -654,7 +919,6 @@
 			sidebarView.dragNode = hit;
 			hit.fx = hit.x;
 			hit.fy = hit.y;
-			reheat();
 			(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 		}
 	}
@@ -663,7 +927,16 @@
 		if (sidebarView.dragNode) {
 			const dx = e.clientX - sidebarView.lastX;
 			const dy = e.clientY - sidebarView.lastY;
-			if (Math.abs(dx) > 2 || Math.abs(dy) > 2) sidebarView.moved = true;
+			// No reheat() here on purpose: that would ramp alpha back up and
+			// reactivate repulsion/spring/center forces for every pair in the
+			// graph, not just around the dragged node — a global reshuffle
+			// instead of a local one. enforceSeparation() (unconditional,
+			// every frame, in tick()) already pushes apart anything that
+			// ends up too close to the dragged node's new position — that's
+			// the only reaction wanted here.
+			if (!sidebarView.moved && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
+				sidebarView.moved = true;
+			}
 			const { x, y } = toWorld(sidebarView, e.clientX, e.clientY);
 			sidebarView.dragNode.fx = x;
 			sidebarView.dragNode.fy = y;
@@ -713,7 +986,6 @@
 			modalView.dragNode = hit;
 			hit.fx = hit.x;
 			hit.fy = hit.y;
-			reheat();
 		} else {
 			modalView.isPanning = true;
 		}
@@ -723,8 +995,16 @@
 	function handleModalPointerMove(e: PointerEvent) {
 		const dxScreen = e.clientX - modalView.lastX;
 		const dyScreen = e.clientY - modalView.lastY;
-		if (Math.abs(dxScreen) > 2 || Math.abs(dyScreen) > 2)
+		// No reheat() here on purpose: that would ramp alpha back up and
+		// reactivate repulsion/spring/center forces for every pair in the
+		// graph, not just around the dragged node — a global reshuffle
+		// instead of a local one. enforceSeparation() (unconditional, every
+		// frame, in tick()) already pushes apart anything that ends up too
+		// close to the dragged node's new position — that's the only
+		// reaction wanted here.
+		if (!modalView.moved && (Math.abs(dxScreen) > 2 || Math.abs(dyScreen) > 2)) {
 			modalView.moved = true;
+		}
 
 		if (modalView.dragNode) {
 			const { x, y } = toWorld(modalView, e.clientX, e.clientY);
@@ -861,57 +1141,68 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
+{#snippet filterButton()}
+	<button
+		class="clickable-icon"
+		class:is-active={showOnlyLinked}
+		title={showOnlyLinked
+			? "Show all notes"
+			: "Show only notes linked to the current one"}
+		aria-label="Toggle showing only linked notes"
+		onclick={toggleFilter}
+	>
+		<svg
+			xmlns="http://www.w3.org/2000/svg"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="2"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+			class="svg-icon"
+		>
+			<polygon
+				points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
+				fill="none"
+			/>
+		</svg>
+	</button>
+{/snippet}
+
+<!-- Shared by the standalone full page and the popup modal — both drive
+     the same `modalView`/`modalWrapEl`/`modalCanvasEl` and only ever show
+     one at a time, so there's no risk of the bind:this targets colliding. -->
+{#snippet bigGraphCanvas()}
+	<div class="graph-modal-canvas-wrap" bind:this={modalWrapEl}>
+		<canvas
+			bind:this={modalCanvasEl}
+			class="graph-modal-canvas"
+			onpointerdown={handleModalPointerDown}
+			onpointermove={handleModalPointerMove}
+			onpointerup={handleModalPointerUp}
+			onpointerleave={handleModalPointerUp}
+			onwheel={handleModalWheel}
+		></canvas>
+		<div class="graph-modal-hint">
+			Scroll to zoom · drag background to pan · drag a node to move it ·
+			click a node to open it
+		</div>
+	</div>
+{/snippet}
+
 {#if standalone}
 	<div class="graph-page">
-		<div class="graph-page-header">
-			<span class="graph-title">Graph view</span>
+		<div class="graph-modal-header">
+			<h1 class="graph-modal-title graph-page-title">Graph view</h1>
 		</div>
-		<div class="graph-page-canvas-wrap" bind:this={modalWrapEl}>
-			<canvas
-				bind:this={modalCanvasEl}
-				class="graph-modal-canvas"
-				onpointerdown={handleModalPointerDown}
-				onpointermove={handleModalPointerMove}
-				onpointerup={handleModalPointerUp}
-				onpointerleave={handleModalPointerUp}
-				onwheel={handleModalWheel}
-			></canvas>
-			<div class="graph-modal-hint">
-				Scroll to zoom · drag background to pan · drag a node to move it
-				· click a node to open it
-			</div>
-		</div>
+		{@render bigGraphCanvas()}
 	</div>
 {:else}
 	<div class="graph-wrap">
 		<div class="graph-header">
 			<span class="graph-title">Graph view</span>
 			<div class="graph-header-actions">
-				<button
-					class="clickable-icon"
-					class:is-active={showOnlyLinked}
-					title={showOnlyLinked
-						? "Show all notes"
-						: "Show only notes linked to the current one"}
-					aria-label="Toggle showing only linked notes"
-					onclick={toggleFilter}
-				>
-					<svg
-						xmlns="http://www.w3.org/2000/svg"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						class="svg-icon"
-					>
-						<polygon
-							points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
-							fill="none"
-						/>
-					</svg>
-				</button>
+				{@render filterButton()}
 				<button
 					class="clickable-icon"
 					title="Expand graph view"
@@ -959,31 +1250,7 @@
 				<div class="graph-modal-header">
 					<span class="graph-modal-title">Graph view</span>
 					<div class="graph-modal-actions">
-						<button
-							class="clickable-icon"
-							class:is-active={showOnlyLinked}
-							title={showOnlyLinked
-								? "Show all notes"
-								: "Show only notes linked to the current one"}
-							aria-label="Toggle showing only linked notes"
-							onclick={toggleFilter}
-						>
-							<svg
-								xmlns="http://www.w3.org/2000/svg"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								class="svg-icon"
-							>
-								<polygon
-									points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
-									fill="none"
-								/>
-							</svg>
-						</button>
+						{@render filterButton()}
 						<button
 							class="clickable-icon"
 							title="Close"
@@ -1010,46 +1277,23 @@
 						</button>
 					</div>
 				</div>
-				<div class="graph-modal-canvas-wrap" bind:this={modalWrapEl}>
-					<canvas
-						bind:this={modalCanvasEl}
-						class="graph-modal-canvas"
-						onpointerdown={handleModalPointerDown}
-						onpointermove={handleModalPointerMove}
-						onpointerup={handleModalPointerUp}
-						onpointerleave={handleModalPointerUp}
-						onwheel={handleModalWheel}
-					></canvas>
-					<div class="graph-modal-hint">
-						Scroll to zoom · drag background to pan · drag a node to
-						move it · click a node to open it
-					</div>
-				</div>
+				{@render bigGraphCanvas()}
 			</div>
 		</div>
 	{/if}
 {/if}
 
 <style>
+	/* .graph-page's own header/canvas-wrap reuse .graph-modal-header and
+	   .graph-modal-canvas-wrap below — same look, one set of rules. */
 	.graph-page {
 		height: 100%;
 		display: flex;
 		flex-direction: column;
 	}
 
-	.graph-page-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 10px 14px;
-		border-bottom: 1px solid var(--background-modifier-border);
-		flex-shrink: 0;
-	}
-
-	.graph-page-canvas-wrap {
-		position: relative;
-		flex: 1;
-		overflow: hidden;
+	.graph-page-title {
+		margin: 0;
 	}
 
 	.graph-wrap {
