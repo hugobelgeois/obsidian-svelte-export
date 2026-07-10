@@ -5,9 +5,17 @@
 // set instead of erroring.
 const graphConfigModules = import.meta.glob("./graphConfig.json", {
 	eager: true,
-}) as Record<string, { default?: { heartbeatSeconds?: number } }>;
+}) as Record<string, { default?: { animationType?: string } }>;
 
 const graphConfig = Object.values(graphConfigModules)[0]?.default ?? {};
 
-/** Seconds between graph-view heartbeat pulses. 0 = disabled. */
-export const HEARTBEAT_SECONDS = graphConfig.heartbeatSeconds ?? 10;
+/** Which periodic animation plays in the graph view's big view (standalone
+ * page + popup modal) — "none", "random" (Graph.svelte picks one animation
+ * id at random once per page load), or an id matching a filename under
+ * lib/animations/ (see lib/animationRegistry.ts). Configured in the plugin
+ * settings; the interval itself is fixed below, not user-configurable. */
+export const ANIMATION_TYPE: string = graphConfig.animationType ?? "none";
+
+/** Seconds between graph-view animation cycles (heartbeat pulse or flicker
+ * burst). */
+export const ANIMATION_INTERVAL_SECONDS = 5;

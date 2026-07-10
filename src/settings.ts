@@ -23,9 +23,12 @@ export interface SvelteExporterSettings {
 	// "" = welcome screen (default), "__graph__" = graph view as a full page,
 	// else a vault file path (from selectedPaths) to redirect "/" to.
 	defaultPage: string;
-	// Seconds between graph-view "heartbeat" pulses (nodes nudge outward
-	// from the center/selected note, then spring back). 0 = disabled.
-	graphHeartbeatSeconds: number;
+	// Which periodic animation plays in the graph view's big view: "none",
+	// or an id matching a filename (without extension) under
+	// svelte-lib/lib/animations/ — see the dynamic enumeration in
+	// display() below and svelte-lib/lib/animationRegistry.ts. The interval
+	// between cycles is fixed in the exported code, not configurable.
+	graphAnimationType: string;
 }
 
 export const DEFAULT_SETTINGS: SvelteExporterSettings = {
@@ -37,7 +40,7 @@ export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	customCssPath: "",
 	selectedTheme: "__none__",
 	defaultPage: "",
-	graphHeartbeatSeconds: 10,
+	graphAnimationType: "heartbeat",
 };
 
 // SVG icons for the eye toggle
@@ -242,26 +245,70 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				});
 			});
 
+		// Enumerate available graph animations from svelte-lib/lib/animations/
+		// — each file there is one selectable animation (see
+		// svelte-lib/lib/animationRegistry.ts, which loads the same folder
+		// at build time). Adding or removing a file changes what's offered
+		// here with no other wiring needed.
+		const path = require("path");
+		const fs = require("fs");
+		const pluginDir = path.join(
+			vaultPath,
+			this.plugin.manifest.dir ??
+				`.obsidian/plugins/${this.plugin.manifest.id}`,
+		);
+		const animationsDir = path.join(
+			pluginDir,
+			"svelte-lib",
+			"lib",
+			"animations",
+		);
+		const animationOptions: Record<string, string> = {
+			none: "None",
+			random: "Random (a different one each page load)",
+		};
+		if (fs.existsSync(animationsDir)) {
+			const files: string[] = fs
+				.readdirSync(animationsDir)
+				.filter((f: string) => f.endsWith(".ts") && f !== "types.ts")
+				.sort();
+			for (const file of files) {
+				const id = file.replace(/\.ts$/, "");
+				const content = fs.readFileSync(
+					path.join(animationsDir, file),
+					"utf-8",
+				);
+				const match = content.match(
+					/export const label\s*=\s*["'`](.*?)["'`]/,
+				);
+				animationOptions[id] = match ? match[1] : id;
+			}
+		}
+
 		new Setting(containerEl)
-			.setName("Graph heartbeat interval")
+			.setName("Graph animation")
 			.setDesc(
-				"In the graph view, seconds between a subtle \"heartbeat\": " +
-					"nodes nudge outward from the center (or, in the popup " +
-					"view, from the currently open note) and spring back. " +
-					"0 disables it.",
+				"In the graph view's big view (popup and full-page), which " +
+					"subtle animation plays every few seconds. Animations are " +
+					"plugin files under svelte-lib/lib/animations/ — add or " +
+					"remove a file there to change what's offered here. " +
+					"Choose \"None\" to disable, or \"Random\" to have each " +
+					"page load pick a different one.",
 			)
-			.addText((text) => {
-				text
-					.setPlaceholder("10")
-					.setValue(String(this.plugin.settings.graphHeartbeatSeconds))
-					.onChange(async (value) => {
-						const n = Math.max(0, Math.round(Number(value)));
-						this.plugin.settings.graphHeartbeatSeconds =
-							Number.isFinite(n) ? n : 0;
-						await this.plugin.saveSettings();
-					});
-				text.inputEl.type = "number";
-				text.inputEl.min = "0";
+			.addDropdown((drop) => {
+				for (const [value, label] of Object.entries(animationOptions)) {
+					drop.addOption(value, label);
+				}
+				const current = this.plugin.settings.graphAnimationType;
+				drop.setValue(
+					Object.prototype.hasOwnProperty.call(animationOptions, current)
+						? current
+						: "none",
+				);
+				drop.onChange(async (value) => {
+					this.plugin.settings.graphAnimationType = value;
+					await this.plugin.saveSettings();
+				});
 			});
 
 		// ── Export cache ──────────────────────────────────────────────────

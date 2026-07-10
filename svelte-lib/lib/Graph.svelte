@@ -1,10 +1,24 @@
 <script lang="ts">
 	import { goto } from "$app/navigation";
 	import { page } from "$app/stores";
-	import { HEARTBEAT_SECONDS } from "$lib/graphConfig";
+	import { animationRegistry, randomAnimationId } from "$lib/animationRegistry";
+	import { ANIMATION_INTERVAL_SECONDS, ANIMATION_TYPE } from "$lib/graphConfig";
+	import type { GNode } from "$lib/graphTypes";
 	import { getLinkEdges } from "$lib/linkGraph";
 	import { flattenTree, siteTree } from "$lib/siteTree";
 	import { onDestroy, onMount } from "svelte";
+
+	// "random" picks one animation id here, once, when this component is
+	// created (i.e. once per page load) — not re-rolled on every reactive
+	// update, so it stays the same animation for the whole visit.
+	const resolvedAnimationType =
+		ANIMATION_TYPE === "random"
+			? (randomAnimationId() ?? "none")
+			: ANIMATION_TYPE;
+
+	/** The selected animation module, if any (undefined for "none" or an id
+	 * that no longer matches a file in lib/animations/). */
+	const activeAnimation = animationRegistry.get(resolvedAnimationType);
 
 	/** When true, render as a full in-page view (used as the site's default
 	 * page) instead of the small sidebar preview + popup modal. Body.svelte
@@ -16,27 +30,6 @@
 
 	// ── Types ────────────────────────────────────────────────────────────────
 
-	interface GNode {
-		id: string;
-		label: string;
-		x: number;
-		y: number;
-		vx: number;
-		vy: number;
-		/** Set while the node is being dragged; null = free to move. */
-		fx: number | null;
-		fy: number | null;
-		degree: number;
-		/** Progressive reveal (standalone page only — see revealOrder below).
-		 * Always true outside standalone mode. */
-		revealed: boolean;
-		/** Timestamp (performance.now()) revealed became true; drives the
-		 * pop-in fade/scale. Null once the fade has fully finished. */
-		revealedAt: number | null;
-		/** Animated toward 1 (normal) or 0.35 (dimmed, hovering elsewhere) —
-		 * eased over time instead of snapping, see DIM_TAU_MS. */
-		dimAlpha: number;
-	}
 	interface GLink {
 		source: string;
 		target: string;
@@ -180,79 +173,25 @@
 		return 1 - Math.pow(1 - t, 3); // ease-out cubic "pop"
 	}
 
-	// ── Heartbeat shockwave (standalone page + popup modal) ─────────────────
-	// A purely visual, physics-independent nudge: an expanding wavefront
-	// travels outward from an origin at a finite speed, and each node only
-	// gets its own brief push-then-return once the wavefront actually
-	// reaches it — not all nodes moving in lockstep. The underlying
-	// simulation x/y never change, so there's no risk of the layout
-	// actually drifting.
-	const HEARTBEAT_WAVE_SPEED = 0.22; // sim-space units per ms the wavefront travels
-	const HEARTBEAT_PUSH_MS = 380; // gentle rise to the crest
-	const HEARTBEAT_RETURN_MS = 1400; // slower, gentle settle back to rest
-	const HEARTBEAT_LOCAL_MS = HEARTBEAT_PUSH_MS + HEARTBEAT_RETURN_MS;
-	const HEARTBEAT_MAX_PUSH = 4; // px at the peak, right where the wavefront currently is
+	// ── Periodic animation (standalone page + popup modal) ──────────────────
+	// The actual effect lives in lib/animations/ — see activeAnimation above
+	// and advanceAnimation()/drawPos() below for how it's driven and drawn.
+	// Both hooks are purely visual and never touch n.x/n.y, so there's no
+	// risk of the layout itself drifting.
 
-	/** Zero velocity at both t=0 and t=1 — a soft start and a soft arrival,
-	 * unlike a plain quadratic ease which still "snaps" into motion. */
-	function smoothstep(t: number): number {
-		const c = Math.min(1, Math.max(0, t));
-		return c * c * (3 - 2 * c);
-	}
-	let heartbeatOrigin: { x: number; y: number } | null = null;
-	let heartbeatStartTime = 0;
-	/** How long the wave stays relevant for — time to reach the farthest
-	 * node, plus one local push-and-return. Computed per-trigger from actual
-	 * node distances so it always fully clears the graph regardless of layout. */
-	let heartbeatActiveMs = 0;
-	let nextHeartbeatAt = 0; // 0 = not yet scheduled
+	/** Generic radius multiplier from the active animation's intensity —
+	 * shared by every intensity-based animation so individual animation
+	 * files don't each need their own "how big does a highlighted node get"
+	 * constant. Animations that need to shrink a node (not just grow it)
+	 * provide getSizeScale instead, which takes priority here. */
+	const INTENSITY_MAX_SCALE = 1.7;
 
-	function triggerHeartbeat(origin: { x: number; y: number }) {
-		heartbeatOrigin = origin;
-		heartbeatStartTime = performance.now();
-		let maxDist = 0;
-		for (const n of nodes) {
-			const dx = n.x - origin.x;
-			const dy = n.y - origin.y;
-			const d = Math.sqrt(dx * dx + dy * dy);
-			if (d > maxDist) maxDist = d;
+	function animationScale(n: GNode, now: number): number {
+		if (activeAnimation?.getSizeScale) {
+			return Math.max(0.05, activeAnimation.getSizeScale(n, now));
 		}
-		heartbeatActiveMs = maxDist / HEARTBEAT_WAVE_SPEED + HEARTBEAT_LOCAL_MS;
-	}
-
-	/** 0 → 1 over the gentle rise, then 1 → 0 over the much slower return —
-	 * smoothstep on both legs means the crest itself is rounded (zero
-	 * velocity where rise meets return) instead of a sharp point, and the
-	 * whole thing starts and ends completely at rest — a rolling swell
-	 * rather than a jolt. */
-	function pulseEnvelope(local: number): number {
-		if (local < HEARTBEAT_PUSH_MS) {
-			return smoothstep(local / HEARTBEAT_PUSH_MS);
-		}
-		const t = (local - HEARTBEAT_PUSH_MS) / HEARTBEAT_RETURN_MS;
-		return 1 - smoothstep(t);
-	}
-
-	/** Visual-only offset for `n` at time `now` — does not touch n.x/n.y. */
-	function heartbeatOffset(n: GNode, now: number): { dx: number; dy: number } {
-		if (!heartbeatOrigin) return { dx: 0, dy: 0 };
-		const elapsed = now - heartbeatStartTime;
-		if (elapsed < 0 || elapsed > heartbeatActiveMs) return { dx: 0, dy: 0 };
-
-		const ddx = n.x - heartbeatOrigin.x;
-		const ddy = n.y - heartbeatOrigin.y;
-		const dist = Math.sqrt(ddx * ddx + ddy * ddy) || 1;
-
-		// The wavefront reaches this node at `arrival`; its own push-and-
-		// return happens in the HEARTBEAT_LOCAL_MS window after that — this
-		// is what makes it a traveling wave rather than a synchronized
-		// pulse: two nodes at different distances peak at different times.
-		const arrival = dist / HEARTBEAT_WAVE_SPEED;
-		const local = elapsed - arrival;
-		if (local < 0 || local > HEARTBEAT_LOCAL_MS) return { dx: 0, dy: 0 };
-
-		const push = HEARTBEAT_MAX_PUSH * pulseEnvelope(local);
-		return { dx: (ddx / dist) * push, dy: (ddy / dist) * push };
+		const t = activeAnimation?.getIntensity?.(n, now) ?? 0;
+		return 1 + (INTENSITY_MAX_SCALE - 1) * t;
 	}
 
 	// ── Hover dimming (eased, not instant) ──────────────────────────────────
@@ -587,12 +526,14 @@
 		const ctx = view.canvas.getContext("2d");
 		if (!ctx) return;
 
-		// The heartbeat is a big-view-only effect (standalone page + popup
-		// modal, never the small sidebar preview) and purely visual — it
-		// never touches n.x/n.y, so this is the only place it exists.
+		// The animation's positional offset is a big-view-only effect
+		// (standalone page + popup modal, never the small sidebar preview)
+		// and purely visual — it never touches n.x/n.y, so this is the only
+		// place it exists.
 		function drawPos(n: GNode): { x: number; y: number } {
 			if (!isModal) return { x: n.x, y: n.y };
-			const off = heartbeatOffset(n, now);
+			const off = activeAnimation?.getOffset?.(n, now);
+			if (!off) return { x: n.x, y: n.y };
 			return { x: n.x + off.dx, y: n.y + off.dy };
 		}
 
@@ -723,8 +664,21 @@
 			updateDimAlpha(n, dimmed ? 0.35 : 1, dimDt);
 			const ease = revealEase(n, now);
 			// Size depends only on how many links a note has.
-			const r = ((3.5 + Math.min(n.degree, 6) * 0.55) / view.scale) * ease;
+			const baseR = (3.5 + Math.min(n.degree, 6) * 0.55) / view.scale;
+			const intensity = activeAnimation?.getIntensity?.(n, now) ?? 0;
+			const r = baseR * ease * animationScale(n, now);
 			const p = drawPos(n);
+
+			if (intensity > 0.01) {
+				// Soft glow behind the node, same treatment as the "current
+				// note" halo below — this is what an intensity-based
+				// animation (e.g. flicker) reads as a "twinkle".
+				ctx.globalAlpha = intensity * 0.5 * ease;
+				ctx.beginPath();
+				ctx.arc(p.x, p.y, baseR * 2.2, 0, Math.PI * 2);
+				ctx.fillStyle = colorActive;
+				ctx.fill();
+			}
 
 			ctx.globalAlpha = n.dimAlpha * ease;
 			ctx.beginPath();
@@ -756,7 +710,8 @@
 			// halo mark it as "you are here", not an oversized radius.
 			const r =
 				((3.5 + Math.min(currentNode.degree, 6) * 0.55) / view.scale) *
-				ease;
+				ease *
+				animationScale(currentNode, now);
 			const p = drawPos(currentNode);
 			// Halo: soft glow behind the node so it reads as "the" focal point.
 			ctx.globalAlpha = 0.28 * ease;
@@ -802,10 +757,13 @@
 		nextRevealAt = now + REVEAL_STEP_MS;
 	}
 
-	/** Schedules/fires the heartbeat pulse. Big-view-only (standalone + modal). */
-	function advanceHeartbeat(now: number, active: boolean) {
-		if (HEARTBEAT_SECONDS <= 0 || !active) {
-			nextHeartbeatAt = 0;
+	let nextAnimationAt = 0; // 0 = not yet scheduled
+
+	/** Schedules/fires the selected periodic animation (see activeAnimation
+	 * above), if any. Big-view-only (standalone + modal). */
+	function advanceAnimation(now: number, active: boolean) {
+		if (!activeAnimation || !active) {
+			nextAnimationAt = 0;
 			return;
 		}
 		// Standalone waits for the reveal to finish first; the popup modal
@@ -813,19 +771,28 @@
 		const ready = standalone ? revealCursor >= revealOrder.length : true;
 		if (!ready) return;
 
-		if (nextHeartbeatAt === 0) {
-			nextHeartbeatAt = now + HEARTBEAT_SECONDS * 1000;
+		// An animation can define its own cadence (e.g. flicker runs more
+		// often than the shared default) — fall back to the shared interval
+		// when it doesn't.
+		const intervalMs =
+			(activeAnimation.intervalSeconds ?? ANIMATION_INTERVAL_SECONDS) *
+			1000;
+
+		if (nextAnimationAt === 0) {
+			nextAnimationAt = now + intervalMs;
 			return;
 		}
-		if (now < nextHeartbeatAt) return;
+		if (now < nextAnimationAt) return;
 
 		const current = currentPath ? nodeIndex.get(currentPath) : null;
-		const origin =
-			!standalone && current
-				? { x: current.x, y: current.y }
-				: { x: SIM_SIZE / 2, y: SIM_SIZE / 2 };
-		triggerHeartbeat(origin);
-		nextHeartbeatAt = now + HEARTBEAT_SECONDS * 1000;
+		activeAnimation.trigger({
+			now,
+			nodes,
+			currentNode: !standalone ? (current ?? null) : null,
+			standalone,
+			simCenter: { x: SIM_SIZE / 2, y: SIM_SIZE / 2 },
+		});
+		nextAnimationAt = now + intervalMs;
 	}
 
 	let rafId = 0;
@@ -850,7 +817,7 @@
 			if (standalone) {
 				// Full-page mode: only the big view exists, always active.
 				if (stillMoving && !modalView.dragNode) fitView(modalView);
-				advanceHeartbeat(now, true);
+				advanceAnimation(now, true);
 				draw(modalView, true, now);
 			} else {
 				// Keep the default (non-user-adjusted) view fitted to every
@@ -863,7 +830,7 @@
 				if (expanded && stillMoving && !modalView.dragNode) {
 					fitView(modalView);
 				}
-				advanceHeartbeat(now, expanded);
+				advanceAnimation(now, expanded);
 				// The small preview is disabled while the big view is open —
 				// no point drawing/hit-testing a view the user can't
 				// interact with anyway (it sits behind the modal backdrop).

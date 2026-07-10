@@ -78,7 +78,7 @@ export default class SvelteExporterPlugin extends Plugin {
 			graphConfigPath,
 			JSON.stringify(
 				{
-					heartbeatSeconds: this.settings.graphHeartbeatSeconds ?? 10,
+					animationType: this.settings.graphAnimationType ?? "heartbeat",
 				},
 				null,
 				2,
