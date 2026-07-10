@@ -1,6 +1,6 @@
 <script lang="ts">
+	import { HIDDEN_PATHS } from "$lib/hiddenPaths";
 	import { siteTree, type TreeNode } from "$lib/siteTree";
-	import { hiddenPaths } from "$lib/stores";
 
 	interface Props {
 		query: string;
@@ -11,7 +11,7 @@
 	// ── Filtering ──────────────────────────────────────────────────────────
 
 	function isHidden(node: TreeNode): boolean {
-		return $hiddenPaths.some((p) => node.path === p || node.path.startsWith(p + "/"));
+		return HIDDEN_PATHS.some((p) => node.path === p || node.path.startsWith(p + "/"));
 	}
 
 	function filterTree(nodes: TreeNode[], q: string): TreeNode[] {

@@ -1296,7 +1296,11 @@
 		height: 190px;
 		border-radius: 6px;
 		overflow: hidden;
-		background: var(--background-primary-alt, var(--background-primary));
+		/* Same variable the big view's .graph-modal uses below — --background-
+		   primary-alt is inconsistently (or never) redefined per light/dark
+		   by some themes, which left this wrapper stuck on a dark fallback
+		   even in Light mode. */
+		background: var(--background-primary);
 	}
 
 	.graph-canvas-wrap.is-disabled {

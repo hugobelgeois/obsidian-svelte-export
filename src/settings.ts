@@ -29,6 +29,10 @@ export interface SvelteExporterSettings {
 	// display() below and svelte-lib/lib/animationRegistry.ts. The interval
 	// between cycles is fixed in the exported code, not configurable.
 	graphAnimationType: string;
+	// Which color mode the exported site starts in on first load. The
+	// visitor's own toggle (top-right of the graph page, or in the right
+	// sidebar elsewhere) still overrides this for the rest of their visit.
+	defaultColorMode: "dark" | "light";
 }
 
 export const DEFAULT_SETTINGS: SvelteExporterSettings = {
@@ -41,6 +45,7 @@ export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	selectedTheme: "__none__",
 	defaultPage: "",
 	graphAnimationType: "heartbeat",
+	defaultColorMode: "dark",
 };
 
 // SVG icons for the eye toggle
@@ -192,6 +197,24 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				drop.setValue(this.plugin.settings.selectedTheme || "__none__");
 				drop.onChange(async (value) => {
 					this.plugin.settings.selectedTheme = value;
+					await this.plugin.saveSettings();
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("Default color mode")
+			.setDesc(
+				"Which mode the exported site starts in when a visitor first " +
+					"loads it. They can still switch it themselves from the " +
+					"toggle in the sidebar (or, on the graph page, top-right).",
+			)
+			.addDropdown((drop) => {
+				drop.addOption("dark", "Dark");
+				drop.addOption("light", "Light");
+				drop.setValue(this.plugin.settings.defaultColorMode);
+				drop.onChange(async (value) => {
+					this.plugin.settings.defaultColorMode =
+						value === "light" ? "light" : "dark";
 					await this.plugin.saveSettings();
 				});
 			});

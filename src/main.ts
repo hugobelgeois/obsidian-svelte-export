@@ -3,7 +3,7 @@ import { Notice, Plugin, TAbstractFile, TFile } from "obsidian";
 import * as path from "path";
 import { IMAGE_EXTENSIONS, sanitizeRoutePath } from "./constants";
 import { exportFile } from "./pageexporter";
-import { ensureSvelteProject } from "./scaffold";
+import { computeStyleSettingsClasses, ensureSvelteProject } from "./scaffold";
 import {
 	DEFAULT_SETTINGS,
 	SvelteExporterSettings,
@@ -83,6 +83,48 @@ export default class SvelteExporterPlugin extends Plugin {
 				null,
 				2,
 			),
+			"utf-8",
+		);
+
+		// ── Write themeConfig.json ────────────────────────────────────────────
+		const themeConfigPath = path.join(
+			destinationPath,
+			"src",
+			"lib",
+			"themeConfig.json",
+		);
+		fs.writeFileSync(
+			themeConfigPath,
+			JSON.stringify(
+				{
+					defaultColorMode: this.settings.defaultColorMode ?? "dark",
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		// ── Write styleSettingsClasses.json ─────────────────────────────────
+		// The community "Style Settings" plugin (if installed) applies things
+		// like ITS Theme's alternate "TTRPG" color schemes by toggling CSS
+		// classes on <body> at runtime — classes the exported site otherwise
+		// has no way to know about, since they live in that plugin's own
+		// data.json rather than in the theme CSS itself.
+		const obsidianDir = path.join(vaultPath, ".obsidian");
+		const styleSettingsClasses = computeStyleSettingsClasses(
+			obsidianDir,
+			this.settings.selectedTheme ?? "",
+		);
+		const styleSettingsClassesPath = path.join(
+			destinationPath,
+			"src",
+			"lib",
+			"styleSettingsClasses.json",
+		);
+		fs.writeFileSync(
+			styleSettingsClassesPath,
+			JSON.stringify(styleSettingsClasses, null, 2),
 			"utf-8",
 		);
 
@@ -289,7 +331,11 @@ export default class SvelteExporterPlugin extends Plugin {
 	}
 
 	private resolveHiddenRoutes(hiddenPaths: string[]): string[] {
-		return hiddenPaths.map((p) => "/" + p.replace(/\.md$/, ""));
+		// Must match the same sanitization used when generating each file's
+		// actual route (see pageexporter.ts / nameMap below) — otherwise a
+		// hidden path with accents/spaces/special characters never matches
+		// the sanitized route the FileTree actually compares against.
+		return hiddenPaths.map((p) => "/" + sanitizeRoutePath(p));
 	}
 
 	/**
