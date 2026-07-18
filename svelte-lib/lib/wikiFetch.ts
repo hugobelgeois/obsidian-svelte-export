@@ -4,6 +4,7 @@
  * section from it. Used by both LinkPreview.svelte (hover panel) and
  * EmbedBlock.svelte (inline embeds) — previously duplicated in both files.
  */
+import { base } from "$app/paths";
 
 function slugify(text: string): string {
 	return text
@@ -66,7 +67,10 @@ export async function fetchWikiHtml(
 	route: string,
 	fragment: string,
 ): Promise<string> {
-	const url = route.endsWith("/") ? route : route + "/";
+	// `route` is the base-less canonical route (e.g. from data-wiki-href) —
+	// add the site's real base ourselves, same as any other internal link.
+	const fullRoute = base + route;
+	const url = fullRoute.endsWith("/") ? fullRoute : fullRoute + "/";
 	const res = await fetch(url, { headers: { Accept: "text/html" } });
 	if (!res.ok) throw new Error(`HTTP ${res.status}`);
 	const text = await res.text();

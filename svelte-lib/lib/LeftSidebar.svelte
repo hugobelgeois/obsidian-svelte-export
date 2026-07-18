@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from "$app/stores";
 	import FileTree from "$lib/FileTree.svelte";
+	import { toRoutePath } from "$lib/routePath";
 	import SidebarShell from "$lib/SidebarShell.svelte";
 
 	interface Props {
@@ -12,16 +13,11 @@
 	let query = $state("");
 
 	// $page.url.pathname is URL-encoded by the browser (spaces become
-	// "%20", etc.) while route/node paths use the literal folder names on
-	// disk — decode here so FileTree's active-item comparison actually
-	// matches for paths containing spaces or special characters.
-	let currentPath = $derived.by(() => {
-		try {
-			return decodeURIComponent($page.url.pathname);
-		} catch {
-			return $page.url.pathname;
-		}
-	});
+	// "%20", etc.) and includes the site's base path in production, while
+	// route/node paths are the literal, base-less folder names on disk —
+	// toRoutePath() undoes both so FileTree's active-item comparison
+	// actually matches.
+	let currentPath = $derived(toRoutePath($page.url.pathname));
 </script>
 
 <SidebarShell side="left" {collapsed} {toggleCollapsed}>

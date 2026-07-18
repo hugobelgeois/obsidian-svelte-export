@@ -66,7 +66,25 @@ function buildTree(): TreeNode[] {
 			}
 		});
 	}
+
+	sortTree(root);
 	return root;
+}
+
+/** Folders first (alphabetically), then files (alphabetically) — at every
+ * level, not just the root. Insertion order out of the loop above just
+ * follows a single global string sort of full route paths, which doesn't
+ * group folders and files the way a real file explorer does. */
+function sortTree(nodes: TreeNode[]): void {
+	nodes.sort((a, b) => {
+		const aIsFolder = a.children !== undefined ? 0 : 1;
+		const bIsFolder = b.children !== undefined ? 0 : 1;
+		if (aIsFolder !== bIsFolder) return aIsFolder - bIsFolder;
+		return a.name.localeCompare(b.name);
+	});
+	for (const n of nodes) {
+		if (n.children) sortTree(n.children);
+	}
 }
 
 export const siteTree: TreeNode[] = buildTree();

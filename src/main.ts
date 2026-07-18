@@ -215,6 +215,10 @@ export default class SvelteExporterPlugin extends Plugin {
 		const staticDir = path.join(destinationPath, "static");
 		if (!fs.existsSync(staticDir))
 			fs.mkdirSync(staticDir, { recursive: true });
+		// Tells GitHub Pages to skip Jekyll processing, which otherwise
+		// silently drops any file/folder starting with an underscore —
+		// including SvelteKit's own _app/ build output.
+		fs.writeFileSync(path.join(staticDir, ".nojekyll"), "", "utf-8");
 
 		let exported = 0,
 			skipped = 0,
@@ -397,10 +401,14 @@ export default class SvelteExporterPlugin extends Plugin {
 		);
 		fs.writeFileSync(
 			pageTsPath,
-			'import { redirect } from "@sveltejs/kit";\n\n' +
+			'import { redirect } from "@sveltejs/kit";\n' +
+				'import { base } from "$app/paths";\n\n' +
 				"export const prerender = true;\n\n" +
 				"export const load = () => {\n" +
-				`\tthrow redirect(307, ${JSON.stringify(target)});\n` +
+				// `target` is base-less — the real site base (e.g. on a
+				// GitHub Pages project page) has to be prepended, same as
+				// any other internal link.
+				`\tthrow redirect(307, base + ${JSON.stringify(target)});\n` +
 				"};\n",
 			"utf-8",
 		);

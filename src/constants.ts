@@ -8,6 +8,20 @@ export const IMAGE_EXTENSIONS = new Set([
 	"avif",
 ]);
 
+/**
+ * Placeholder prefix stamped onto every root-relative URL pageexporter.ts
+ * generates (wikilink hrefs, image embed srcs, …) — swapped for the site's
+ * real SvelteKit `base` path at runtime by svelte-lib/lib/markdownRenderer.ts.
+ * Routes are baked into the exported .svelte files as plain string literals
+ * at export time, long before the SvelteKit build (and its `base` config)
+ * even exists, so this placeholder is what lets the same generated markup
+ * work whether the site is served at "/" or under a GitHub Pages-style
+ * "/<repo>/" subpath. Must stay byte-for-byte identical to BASE_SENTINEL in
+ * markdownRenderer.ts (a separate module graph — Vite-bundled, not
+ * esbuild-bundled with this file — so it can't just be imported here).
+ */
+export const BASE_PATH_SENTINEL = "%%BASE%%";
+
 /** Strip diacritics (é→e, è→e, ç→c, …) instead of turning them into "_". */
 function stripDiacritics(str: string): string {
 	return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");

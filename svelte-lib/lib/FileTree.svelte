@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { base } from "$app/paths";
 	import { HIDDEN_PATHS } from "$lib/hiddenPaths";
 	import { siteTree, type TreeNode } from "$lib/siteTree";
 
@@ -49,7 +50,7 @@
 			data-path={node.path}
 			style={itemStyle(node.depth)}
 		>
-			<a href={node.path} class="tree-item-inner nav-file-title-content">
+			<a href={base + node.path} class="tree-item-inner nav-file-title-content">
 				{node.name}
 			</a>
 		</div>

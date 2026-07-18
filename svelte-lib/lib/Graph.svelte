@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { goto } from "$app/navigation";
+	import { base } from "$app/paths";
 	import { page } from "$app/stores";
 	import { animationRegistry, randomAnimationId } from "$lib/animationRegistry";
 	import { ANIMATION_INTERVAL_SECONDS, ANIMATION_TYPE } from "$lib/graphConfig";
 	import type { GNode } from "$lib/graphTypes";
 	import { getLinkEdges } from "$lib/linkGraph";
+	import { toRoutePath } from "$lib/routePath";
 	import { flattenTree, siteTree } from "$lib/siteTree";
 	import { onDestroy, onMount } from "svelte";
 
@@ -924,7 +926,9 @@
 	 * on its own once currentPath updates — nothing extra to do there.
 	 */
 	function focusOnNode(id: string) {
-		goto(id);
+		// `id` is the base-less canonical route (see node ids) — goto()
+		// needs the real site base prepended, same as any other href.
+		goto(base + id);
 		if (!showOnlyLinked) showOnlyLinked = true;
 	}
 
@@ -1050,17 +1054,15 @@
 	onMount(() => {
 		unsubscribePage = page.subscribe((p) => {
 			// $page.url.pathname is URL-encoded by the browser (spaces become
-			// "%20", accented/special chars may be encoded too), but node ids
-			// use the literal characters straight from the folder names on
-			// disk. Without decoding, a route like "Sessions du Masque" would
-			// never match "Sessions%20du%20Masque", breaking every
-			// current-note-dependent feature (highlight, neighbor labels,
-			// the "only linked" filter).
-			try {
-				currentPath = decodeURIComponent(p.url.pathname);
-			} catch {
-				currentPath = p.url.pathname;
-			}
+			// "%20", accented/special chars may be encoded too) and includes
+			// the site's base path in production, but node ids are the
+			// literal, base-less characters straight from the folder names
+			// on disk — toRoutePath() undoes both. Without it, a route like
+			// "Sessions du Masque" would never match "Sessions%20du%20Masque"
+			// (or, deployed under a subpath, nothing would ever match at
+			// all), breaking every current-note-dependent feature
+			// (highlight, neighbor labels, the "only linked" filter).
+			currentPath = toRoutePath(p.url.pathname);
 			// (1) Reload the physics and recenter on the note we just
 			// navigated to — whether that came from clicking a node in the
 			// graph or any other kind of navigation.

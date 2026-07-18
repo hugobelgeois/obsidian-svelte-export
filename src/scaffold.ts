@@ -87,6 +87,12 @@ export function ensureSvelteProject(
 	}
 
 	copyPluginFiles(destRoot, pluginDir, vaultPath, selectedTheme);
+
+	// Runs on every export (not just first scaffold) so a project exported
+	// before this existed — like one already pushed to GitHub with a
+	// broken Pages deployment — gets patched on its next export too.
+	ensureGitHubPagesDeployment(destRoot);
+
 	return true;
 }
 
@@ -131,6 +137,174 @@ function patchPrerenderErrorHandling(destRoot: string): void {
 			`\t\t\t}`,
 	);
 	fs.writeFileSync(viteConfigPath, patched, "utf-8");
+}
+
+// ── GitHub Pages deployment ─────────────────────────────────────────────────
+
+/**
+ * Makes the exported project deployable to GitHub Pages out of the box:
+ * swaps `sv create`'s default `@sveltejs/adapter-auto` (which doesn't
+ * support GitHub Pages and fails the build there) for
+ * `@sveltejs/adapter-static`, and writes a GitHub Actions workflow that
+ * builds and publishes the site via Pages' own Actions-based deployment —
+ * not the legacy "Pages build and deployment" system (the one that warns
+ * about being forced onto a newer Node than the actions it runs declare),
+ * which only ever runs when a repo's Pages source is left on "Deploy from
+ * a branch". Idempotent and safe to call on every export, including one
+ * exported before this existed.
+ */
+function ensureGitHubPagesDeployment(destRoot: string): void {
+	patchAdapterForStaticHosting(destRoot);
+	writeGitHubPagesWorkflow(destRoot);
+}
+
+/**
+ * Swaps the adapter-auto import/usage in vite.config.ts for adapter-static,
+ * installing the package first if it isn't already a dependency. Also adds
+ * `paths.base` driven by a BASE_PATH env var (set by the deploy workflow to
+ * "/<repo name>") so the site resolves correctly under a GitHub project
+ * page's URL subpath, and a `fallback: '404.html'` page.
+ *
+ * No-ops once already patched (checks for "adapter-static" in the file), so
+ * this is cheap and safe to call on every export.
+ */
+function patchAdapterForStaticHosting(destRoot: string): void {
+	const viteConfigPath = path.join(destRoot, "vite.config.ts");
+	if (!fs.existsSync(viteConfigPath)) return;
+
+	let content = fs.readFileSync(viteConfigPath, "utf-8");
+	if (content.includes("adapter-static")) return; // already patched
+
+	const pkgPath = path.join(destRoot, "package.json");
+	let hasAdapterStatic = false;
+	if (fs.existsSync(pkgPath)) {
+		try {
+			const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+			hasAdapterStatic =
+				!!pkg.dependencies?.["@sveltejs/adapter-static"] ||
+				!!pkg.devDependencies?.["@sveltejs/adapter-static"];
+		} catch {
+			console.warn("[SvelteExporter] Could not parse package.json");
+		}
+	}
+
+	if (!hasAdapterStatic) {
+		try {
+			// eslint-disable-next-line @typescript-eslint/no-var-requires
+			const { execSync } = require("child_process");
+			new Notice(
+				"📦 Installing @sveltejs/adapter-static for GitHub Pages…",
+			);
+			execSync("npm install -D @sveltejs/adapter-static", {
+				cwd: destRoot,
+				stdio: "pipe",
+			});
+		} catch (e) {
+			console.error(
+				"[SvelteExporter] Failed to install @sveltejs/adapter-static:",
+				e,
+			);
+			new Notice(
+				"❌ Could not install @sveltejs/adapter-static — GitHub Pages build will fail. See console.",
+			);
+			return;
+		}
+	}
+
+	content = content
+		.replace(
+			`import adapter from '@sveltejs/adapter-auto';`,
+			`import adapter from '@sveltejs/adapter-static';`,
+		)
+		.replace(
+			`import adapter from "@sveltejs/adapter-auto";`,
+			`import adapter from "@sveltejs/adapter-static";`,
+		);
+
+	const marker = "adapter: adapter()";
+	if (!content.includes(marker)) {
+		console.warn(
+			"[SvelteExporter] vite.config.ts didn't match the expected sv create " +
+				"template — skipping the GitHub Pages adapter patch. Configure " +
+				"@sveltejs/adapter-static manually to deploy there.",
+		);
+		return;
+	}
+
+	content = content.replace(
+		marker,
+		`adapter: adapter({ fallback: '404.html' }),\n\n` +
+			`\t\t\t// GitHub project pages are served from https://<user>.github.io/<repo>/ —\n` +
+			`\t\t\t// BASE_PATH is set by .github/workflows/deploy.yml at build time so the\n` +
+			`\t\t\t// site resolves correctly under that subpath without hardcoding the repo\n` +
+			`\t\t\t// name here (empty locally, so \`npm run dev\`/\`preview\` still work at "/").\n` +
+			`\t\t\tpaths: { base: process.env.BASE_PATH ?? "" }`,
+	);
+
+	fs.writeFileSync(viteConfigPath, content, "utf-8");
+}
+
+const GITHUB_PAGES_WORKFLOW = `name: Deploy to GitHub Pages
+
+# Uses Pages' own Actions-based deployment — make sure the repo's Settings →
+# Pages → "Build and deployment" → Source is set to "GitHub Actions" (not
+# "Deploy from a branch"), or this workflow runs but Pages won't serve it.
+on:
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Compute base path for a GitHub project page
+        run: echo "BASE_PATH=/\${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
+      - run: npm run build
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: "build"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: \${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+`;
+
+/**
+ * Always (re)written, like every other plugin-owned template — see
+ * copyPluginFiles' own doc comment for why overwriting unconditionally is
+ * the right call here rather than only writing it once.
+ */
+function writeGitHubPagesWorkflow(destRoot: string): void {
+	const workflowDir = path.join(destRoot, ".github", "workflows");
+	fs.mkdirSync(workflowDir, { recursive: true });
+	fs.writeFileSync(
+		path.join(workflowDir, "deploy.yml"),
+		GITHUB_PAGES_WORKFLOW,
+		"utf-8",
+	);
 }
 
 // ── Plugin-owned file copier ───────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import { TFile, Vault } from "obsidian";
 import * as path from "path";
-import { IMAGE_EXTENSIONS, sanitizeRoutePath } from "./constants";
+import { BASE_PATH_SENTINEL, IMAGE_EXTENSIONS, sanitizeRoutePath } from "./constants";
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
@@ -111,9 +111,15 @@ function parseFrontMatter(markdown: string): {
 /**
  * Replace Obsidian wikilinks with standard markdown / HTML before rendering.
  *
- * ![[image.jpg]]          → <img src="/image.jpg" alt="image.jpg" />
+ * ![[image.jpg]]          → <img src="%%BASE%%/image.jpg" alt="image.jpg" />
  * ![[Note]] / ![[Note#S]] → <div class="wiki-embed" data-route="..." data-fragment="..."></div>
- * [[Note]] / [[Note|alias]]→ [alias](/route)   (standard md link — safe for renderMarkdown)
+ * [[Note]] / [[Note|alias]]→ <a href="%%BASE%%/route" data-wiki-href="/route" …>alias</a>
+ *
+ * href/src carry the %%BASE%% sentinel (BASE_PATH_SENTINEL) since the
+ * site's real base path isn't known yet at export time — see its doc
+ * comment in constants.ts. data-route/data-wiki-href stay base-less on
+ * purpose: they're only ever read by our own JS (wikiFetch.ts), which adds
+ * the real base itself.
  */
 function processWikilinks(
 	body: string,
@@ -153,7 +159,10 @@ function processWikilinks(
 				const sizeMatch = alias?.trim().match(/^(\d+)(?:x\d+)?$/);
 				const widthAttr = sizeMatch ? ` width="${sizeMatch[1]}"` : "";
 				const alt = (sizeMatch || !alias ? basename : alias).trim();
-				return `<img src="/${encodeURIComponent(basename)}" alt="${alt}"${widthAttr} class="wiki-image" />`;
+				// The sentinel is swapped for the site's real base path at
+				// runtime (see BASE_PATH_SENTINEL's doc comment) — this
+				// string is baked in long before that base path is known.
+				return `<img src="${BASE_PATH_SENTINEL}/${encodeURIComponent(basename)}" alt="${alt}"${widthAttr} class="wiki-image" />`;
 			}
 
 			const resolved = resolveWikilink(target, wikilinkMap);
@@ -177,8 +186,10 @@ function processWikilinks(
 			linkedRoutes.add(resolved.route);
 			const { route, fragment } = resolved;
 			const href = fragment ? `${route}#${slugify(fragment)}` : route;
-			// Use HTML <a> directly so the link survives renderMarkdown unchanged
-			return `<a href="${href}" class="wiki-link internal-link" data-wiki-href="${route}" data-wiki-fragment="${encodeURIComponent(fragment)}">${label}</a>`;
+			// Use HTML <a> directly so the link survives renderMarkdown unchanged.
+			// data-wiki-href stays sentinel-free — LinkPreview.svelte/wikiFetch.ts
+			// add the real base themselves when they fetch it.
+			return `<a href="${BASE_PATH_SENTINEL}${href}" class="wiki-link internal-link" data-wiki-href="${route}" data-wiki-fragment="${encodeURIComponent(fragment)}">${label}</a>`;
 		},
 	);
 
@@ -330,7 +341,13 @@ function emitSnippets(sections: Section[]): string[] {
 			body = [mdBody, childCalls].filter(Boolean).join("\n");
 		} else {
 			const Tag = `h${sec.level}`;
-			body = `\t<section>\n\t\t<${Tag} id="${sec.id}">${sec.title}</${Tag}>\n${mdBody}\n${childCalls}\n\t</section>`;
+			// sec.title can itself contain wikilink-derived HTML (e.g. a
+			// heading like "## See also [[Some Note]]") — that HTML still
+			// carries the %%BASE%% sentinel (see BASE_PATH_SENTINEL), so it
+			// must go through applyBase() at runtime via {@html} rather than
+			// being spliced in as static template markup, which would leave
+			// the literal sentinel in the compiled output forever.
+			body = `\t<section>\n\t\t<${Tag} id="${sec.id}">{@html applyBase(${JSON.stringify(sec.title)})}</${Tag}>\n${mdBody}\n${childCalls}\n\t</section>`;
 		}
 
 		out.push(`{#snippet ${sec.snippetName}()}\n${body}\n{/snippet}`);
@@ -395,7 +412,7 @@ function markdownToSvelte(
 	const pageSvelte = `<script lang="ts">
   import { onDestroy } from "svelte";
   import { tocHeadings } from "$lib/stores";
-  import { renderMarkdown } from "$lib/markdownRenderer";
+  import { applyBase, renderMarkdown } from "$lib/markdownRenderer";
   import LinkPreview from "$lib/LinkPreview.svelte";
   import EmbedBlock from "$lib/EmbedBlock.svelte";
 
