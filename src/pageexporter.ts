@@ -12,10 +12,12 @@ export async function exportFile(
 ): Promise<string[]> {
 	const markdown = await vault.read(file);
 	const wikilinkMap = buildWikilinkMap(vault);
+	const imageBasenameMap = buildImageBasenameMap(vault);
 	const { pageSvelte, pageTs, linkedRoutes } = markdownToSvelte(
 		markdown,
 		file.basename,
 		wikilinkMap,
+		imageBasenameMap,
 	);
 
 	// Sanitize path segments — apostrophes and other special chars break
@@ -43,6 +45,23 @@ function buildWikilinkMap(vault: Vault): Map<string, string> {
 			file.basename.toLowerCase(),
 			"/" + sanitizeRoutePath(file.path),
 		);
+	}
+	return map;
+}
+
+/**
+ * Maps an image's filename (with extension), lowercased, to its real
+ * on-disk casing — Obsidian resolves `![[...]]` embeds case-insensitively,
+ * so a note can reference "hazdaim.png" while the actual file is
+ * "Hazdaim.png". The image is always copied to static/ under its true
+ * name (see main.ts), so the <img src> must use that same real casing, not
+ * whatever case happens to be typed in the wikilink.
+ */
+function buildImageBasenameMap(vault: Vault): Map<string, string> {
+	const map = new Map<string, string>();
+	for (const file of vault.getFiles()) {
+		if (!IMAGE_EXTENSIONS.has(file.extension)) continue;
+		map.set(file.name.toLowerCase(), file.name);
 	}
 	return map;
 }
@@ -99,6 +118,7 @@ function parseFrontMatter(markdown: string): {
 function processWikilinks(
 	body: string,
 	wikilinkMap: Map<string, string>,
+	imageBasenameMap: Map<string, string>,
 	linkedRoutes: Set<string>,
 ): string {
 	// Embeds first
@@ -109,8 +129,31 @@ function processWikilinks(
 			const ext = filename.split(".").pop()?.toLowerCase() ?? "";
 
 			if (IMAGE_EXTENSIONS.has(ext)) {
-				const alt = (alias ?? filename).trim();
-				return `<img src="/${encodeURIComponent(filename)}" alt="${alt}" class="wiki-image" />`;
+				// Images are always copied flat into static/ by their real
+				// basename (see main.ts) regardless of which vault folder
+				// they actually live in — so a wikilink target that
+				// includes a folder prefix (e.g. "Images/Arek.png", which
+				// Obsidian inserts whenever the bare filename alone isn't
+				// unique) must be reduced to just the basename here too, or
+				// the <img> src won't match where the file was copied.
+				const typedBasename = filename.split("/").pop() ?? filename;
+				// Obsidian resolves embeds case-insensitively, so the case
+				// actually typed in the note (e.g. "hazdaim.png") may not
+				// match the real file on disk (e.g. "Hazdaim.png") — since
+				// the file was copied under its true name, the <img> src
+				// must use that same real casing or it 404s.
+				const basename =
+					imageBasenameMap.get(typedBasename.toLowerCase()) ??
+					typedBasename;
+				// Obsidian's embed syntax uses the alias slot for a size
+				// hint on images, not a caption — `![[img.png|300]]` means
+				// "300px wide", `![[img.png|300x200]]` means "300x200" —
+				// never real alt text, so that case falls back to the
+				// filename for alt and becomes a width attribute instead.
+				const sizeMatch = alias?.trim().match(/^(\d+)(?:x\d+)?$/);
+				const widthAttr = sizeMatch ? ` width="${sizeMatch[1]}"` : "";
+				const alt = (sizeMatch || !alias ? basename : alias).trim();
+				return `<img src="/${encodeURIComponent(basename)}" alt="${alt}"${widthAttr} class="wiki-image" />`;
 			}
 
 			const resolved = resolveWikilink(target, wikilinkMap);
@@ -310,6 +353,7 @@ function markdownToSvelte(
 	markdown: string,
 	title: string,
 	wikilinkMap: Map<string, string>,
+	imageBasenameMap: Map<string, string>,
 ): { pageSvelte: string; pageTs: string; linkedRoutes: string[] } {
 	const { meta, body: rawBody } = parseFrontMatter(markdown);
 	const pageTitle = meta["title"] || title;
@@ -318,7 +362,12 @@ function markdownToSvelte(
 
 	// Pre-process wikilinks before splitting into sections
 	const linkedRoutes = new Set<string>();
-	const body = processWikilinks(rawBody, wikilinkMap, linkedRoutes);
+	const body = processWikilinks(
+		rawBody,
+		wikilinkMap,
+		imageBasenameMap,
+		linkedRoutes,
+	);
 
 	const sections = parseIntoSections(body);
 
