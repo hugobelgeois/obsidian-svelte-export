@@ -6,6 +6,7 @@
 	import { ANIMATION_INTERVAL_SECONDS, ANIMATION_TYPE } from "$lib/graphConfig";
 	import type { GNode } from "$lib/graphTypes";
 	import { getLinkEdges } from "$lib/linkGraph";
+	import { NODE_COLORS } from "$lib/nodeColors";
 	import { toRoutePath } from "$lib/routePath";
 	import { flattenTree, siteTree } from "$lib/siteTree";
 	import { onDestroy, onMount } from "svelte";
@@ -682,10 +683,15 @@
 				ctx.fill();
 			}
 
+			// Obsidian's own graph "Groups" color — big-view-only (matches
+			// how the graph's own periodic animations are scoped), never
+			// applied to the small sidebar preview.
+			const groupColor = isModal ? NODE_COLORS[n.id] : undefined;
+
 			ctx.globalAlpha = n.dimAlpha * ease;
 			ctx.beginPath();
 			ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-			ctx.fillStyle = isHovered ? colorLabel : colorNode;
+			ctx.fillStyle = isHovered ? colorLabel : (groupColor ?? colorNode);
 			ctx.fill();
 
 			if (isHovered) {

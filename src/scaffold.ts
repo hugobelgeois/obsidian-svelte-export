@@ -41,8 +41,14 @@ export function ensureSvelteProject(
 			const parentDir = path.dirname(destRoot);
 			const projectName = path.basename(destRoot);
 
+			// --no-dir-check: without it, sv create shows an interactive
+			// "Directory not empty. Continue?" prompt whenever destRoot
+			// already has anything in it (e.g. a .git folder from cloning
+			// the GitHub repo first, or a stray .obsidian folder) — this
+			// runs non-interactively, so that prompt would just hang/fail
+			// with no way to answer it.
 			execSync(
-				`npx sv create "${projectName}" --template minimal --types ts --no-add-ons --no-install`,
+				`npx sv create "${projectName}" --template minimal --types ts --no-add-ons --no-dir-check --no-install`,
 				{ cwd: parentDir, stdio: "pipe" },
 			);
 

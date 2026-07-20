@@ -33,6 +33,13 @@ export interface SvelteExporterSettings {
 	// visitor's own toggle (top-right of the graph page, or in the right
 	// sidebar elsewhere) still overrides this for the rest of their visit.
 	defaultColorMode: "dark" | "light";
+	// Color the graph view's big view (popup + full page) using Obsidian's
+	// own graph "Groups" (.obsidian/graph.json), so notes matching a saved
+	// group query show up in that group's color like they do in Obsidian.
+	exportGraphColors: boolean;
+	// Vault-relative path to an image used as the exported site's favicon.
+	// "" = no custom favicon (browser default).
+	faviconPath: string;
 }
 
 export const DEFAULT_SETTINGS: SvelteExporterSettings = {
@@ -46,6 +53,8 @@ export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	defaultPage: "",
 	graphAnimationType: "heartbeat",
 	defaultColorMode: "dark",
+	exportGraphColors: true,
+	faviconPath: "",
 };
 
 // SVG icons for the eye toggle
@@ -202,6 +211,76 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
+			.setName("Favicon")
+			.setDesc(
+				"Vault-relative path to an image (png/svg/ico/jpg/…) used as " +
+					"the exported site's browser-tab icon. Leave empty for no " +
+					"custom favicon.",
+			)
+			.addText((text) => {
+				text.setPlaceholder("Images/logo.png")
+					.setValue(this.plugin.settings.faviconPath)
+					.onChange(async (value) => {
+						this.plugin.settings.faviconPath = value.trim();
+						await this.plugin.saveSettings();
+					});
+				(this as any)._faviconTextComponent = text;
+			})
+			.addButton((btn) => {
+				btn.setButtonText("Browse…")
+					.setTooltip("Open a file picker to choose the favicon image")
+					.onClick(() => {
+						try {
+							const { remote } = require("electron");
+							const result: string[] | undefined =
+								remote.dialog.showOpenDialogSync(
+									remote.getCurrentWindow(),
+									{
+										title: "Select favicon image",
+										properties: ["openFile"],
+										filters: [
+											{
+												name: "Images",
+												extensions: [...IMAGE_EXTENSIONS, "ico"],
+											},
+										],
+									},
+								);
+							const chosen = result?.[0];
+							if (!chosen) return;
+							const vaultPath = (
+								this.app.vault.adapter as any
+							).basePath as string;
+							const normalizedChosen = chosen
+								.replace(/\\/g, "/")
+								.toLowerCase();
+							const normalizedVault = vaultPath
+								.replace(/\\/g, "/")
+								.toLowerCase();
+							if (!normalizedChosen.startsWith(normalizedVault)) {
+								new Notice(
+									"⚠️ Favicon must be a file inside the vault.",
+								);
+								return;
+							}
+							const relative = chosen
+								.slice(vaultPath.length)
+								.replace(/\\/g, "/")
+								.replace(/^\/+/, "");
+							this.plugin.settings.faviconPath = relative;
+							this.plugin.saveSettings();
+							const textCmp = (this as any)._faviconTextComponent;
+							if (textCmp) textCmp.setValue(relative);
+						} catch (e) {
+							new Notice(
+								"⚠️ Could not open file picker. Set the path manually.",
+							);
+							console.error("[SvelteExporter] Browse error:", e);
+						}
+					});
+			});
+
+		new Setting(containerEl)
 			.setName("Default color mode")
 			.setDesc(
 				"Which mode the exported site starts in when a visitor first " +
@@ -333,6 +412,25 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				});
 			});
+
+		new Setting(containerEl)
+			.setName("Color graph nodes by group")
+			.setDesc(
+				"In the graph view's big view (popup and full-page), color " +
+					"nodes using Obsidian's own graph \"Groups\" " +
+					"(the Graph view's Groups tab, saved in .obsidian/graph.json) " +
+					"— a note matching a saved group's query is colored the " +
+					"same way there. Only path:/file:/tag: queries are " +
+					"supported; more complex ones (OR, regex, …) are ignored.",
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.exportGraphColors)
+					.onChange(async (value) => {
+						this.plugin.settings.exportGraphColors = value;
+						await this.plugin.saveSettings();
+					}),
+			);
 
 		// ── Export cache ──────────────────────────────────────────────────
 		containerEl.createEl("h3", { text: "Export cache" });

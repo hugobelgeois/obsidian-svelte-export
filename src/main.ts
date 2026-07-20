@@ -2,6 +2,7 @@ import * as fs from "fs";
 import { Notice, Plugin, TAbstractFile, TFile } from "obsidian";
 import * as path from "path";
 import { IMAGE_EXTENSIONS, sanitizeRoutePath } from "./constants";
+import { computeNodeColors } from "./graphColors";
 import { exportFile } from "./pageexporter";
 import { computeStyleSettingsClasses, ensureSvelteProject } from "./scaffold";
 import {
@@ -66,6 +67,7 @@ export default class SvelteExporterPlugin extends Plugin {
 		if (!ready) return;
 
 		this.writeDefaultPage(destinationPath, files);
+		this.writeFavicon(destinationPath, vaultPath);
 
 		// ── Write graphConfig.json ───────────────────────────────────────────
 		const graphConfigPath = path.join(
@@ -125,6 +127,26 @@ export default class SvelteExporterPlugin extends Plugin {
 		fs.writeFileSync(
 			styleSettingsClassesPath,
 			JSON.stringify(styleSettingsClasses, null, 2),
+			"utf-8",
+		);
+
+		// ── Write nodeColors.json ────────────────────────────────────────────
+		// Obsidian's own graph view "Groups" — colors notes matching a saved
+		// query (e.g. path:Bestiaire). Reused here so the exported graph's
+		// big view looks the same, without asking the user to redefine
+		// groups a second time in this plugin's own settings.
+		const nodeColors = this.settings.exportGraphColors
+			? computeNodeColors(this.app, obsidianDir, files)
+			: {};
+		const nodeColorsPath = path.join(
+			destinationPath,
+			"src",
+			"lib",
+			"nodeColors.json",
+		);
+		fs.writeFileSync(
+			nodeColorsPath,
+			JSON.stringify(nodeColors, null, 2),
 			"utf-8",
 		);
 
@@ -412,6 +434,67 @@ export default class SvelteExporterPlugin extends Plugin {
 				"};\n",
 			"utf-8",
 		);
+	}
+
+	/**
+	 * Copies the chosen favicon image into static/ and points app.html's
+	 * <link rel="icon"> at it — app.html isn't one of svelte-lib's own
+	 * templates (it's `sv create`'s, generated once and never touched again
+	 * by copyPluginFiles), so this patches it directly, on every export,
+	 * idempotently: any icon link this method previously added is stripped
+	 * first, so switching images (or clearing the setting) never leaves a
+	 * stale/duplicate tag behind.
+	 */
+	private writeFavicon(destinationPath: string, vaultPath: string) {
+		const appHtmlPath = path.join(destinationPath, "src", "app.html");
+		if (!fs.existsSync(appHtmlPath)) return;
+
+		let html = fs.readFileSync(appHtmlPath, "utf-8");
+		html = html.replace(
+			/[ \t]*<link rel="icon"[^>]*data-svelte-exporter-favicon[^>]*>\n?/,
+			"",
+		);
+
+		const faviconPath = this.settings.faviconPath?.trim();
+		if (faviconPath) {
+			const srcPath = path.join(vaultPath, faviconPath);
+			if (fs.existsSync(srcPath)) {
+				const ext = path.extname(srcPath).toLowerCase() || ".png";
+				const staticDir = path.join(destinationPath, "static");
+				if (!fs.existsSync(staticDir)) {
+					fs.mkdirSync(staticDir, { recursive: true });
+				}
+				fs.copyFileSync(srcPath, path.join(staticDir, `favicon${ext}`));
+
+				const mimeByExt: Record<string, string> = {
+					".png": "image/png",
+					".svg": "image/svg+xml",
+					".ico": "image/x-icon",
+					".jpg": "image/jpeg",
+					".jpeg": "image/jpeg",
+					".gif": "image/gif",
+					".webp": "image/webp",
+				};
+				const mime = mimeByExt[ext] ?? "image/png";
+				// %sveltekit.assets% (not a hardcoded "/favicon...") — this
+				// placeholder is filled in by SvelteKit itself with the
+				// correct base-prefixed assets path, so the icon still
+				// resolves under a GitHub Pages-style "/<repo>/" subpath.
+				const tag =
+					`\t\t<link rel="icon" href="%sveltekit.assets%/favicon${ext}" ` +
+					`type="${mime}" data-svelte-exporter-favicon />\n`;
+				html = html.replace(
+					"%sveltekit.head%",
+					`${tag}\t\t%sveltekit.head%`,
+				);
+			} else {
+				new Notice(
+					`⚠️ Favicon file not found in vault: ${faviconPath}`,
+				);
+			}
+		}
+
+		fs.writeFileSync(appHtmlPath, html, "utf-8");
 	}
 
 	// ── Cache ──────────────────────────────────────────────────────────────
