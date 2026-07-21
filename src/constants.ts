@@ -9,6 +9,18 @@ export const IMAGE_EXTENSIONS = new Set([
 ]);
 
 /**
+ * Extensions exported the same way as images: selectable in the settings
+ * tree, copied flat into static/ by basename. Covers arbitrary data a note
+ * or a third-party plugin wants fetch()able at a predictable root-relative
+ * URL (e.g. Map Manager's own JSON snapshots) — this exporter doesn't
+ * inspect or care about the file's contents, just its extension.
+ */
+export const STATIC_PASSTHROUGH_EXTENSIONS = new Set([
+	...IMAGE_EXTENSIONS,
+	"json",
+]);
+
+/**
  * Placeholder prefix stamped onto every root-relative URL pageexporter.ts
  * generates (wikilink hrefs, image embed srcs, …) — swapped for the site's
  * real SvelteKit `base` path at runtime by svelte-lib/lib/markdownRenderer.ts.

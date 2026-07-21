@@ -7,7 +7,11 @@ import {
 	TFile,
 	TFolder,
 } from "obsidian";
-import { IMAGE_EXTENSIONS, sanitizeRoutePath } from "./constants";
+import {
+	IMAGE_EXTENSIONS,
+	sanitizeRoutePath,
+	STATIC_PASSTHROUGH_EXTENSIONS,
+} from "./constants";
 import type SvelteExporterPlugin from "./main";
 
 export type MarkdownStyle = "obsidian" | "custom" | "none";
@@ -40,6 +44,10 @@ export interface SvelteExporterSettings {
 	// Vault-relative path to an image used as the exported site's favicon.
 	// "" = no custom favicon (browser default).
 	faviconPath: string;
+	// Vault-relative paths to .js/.ts files copied into the exported site
+	// and run on every page — see writeCustomScripts() in main.ts and the
+	// import.meta.glob() loader in svelte-lib/routes/+layout.svelte.
+	customScriptPaths: string[];
 }
 
 export const DEFAULT_SETTINGS: SvelteExporterSettings = {
@@ -55,6 +63,7 @@ export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	defaultColorMode: "dark",
 	exportGraphColors: true,
 	faviconPath: "",
+	customScriptPaths: [],
 };
 
 // SVG icons for the eye toggle
@@ -432,6 +441,99 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 					}),
 			);
 
+		// ── Custom scripts ──────────────────────────────────────────────────
+		containerEl.createEl("h3", { text: "Custom scripts" });
+		containerEl.createEl("p", {
+			text:
+				"Import .js/.ts files from your vault to add custom functionality " +
+				"to the exported site. Each file's default export (if it's a " +
+				"function) runs once, after the page mounts in the visitor's " +
+				"browser.",
+			cls: "setting-item-description",
+		});
+
+		for (const scriptPath of this.plugin.settings.customScriptPaths ?? []) {
+			new Setting(containerEl)
+				.setName(require("path").basename(scriptPath))
+				.setDesc(scriptPath)
+				.addButton((btn) => {
+					btn.setIcon("trash")
+						.setTooltip("Remove")
+						.onClick(async () => {
+							this.plugin.settings.customScriptPaths =
+								this.plugin.settings.customScriptPaths.filter(
+									(p) => p !== scriptPath,
+								);
+							await this.plugin.saveSettings();
+							this.display();
+						});
+				});
+		}
+
+		new Setting(containerEl)
+			.setName("Add custom script")
+			.setDesc("Choose a .js or .ts file from your vault to include.")
+			.addButton((btn) => {
+				btn.setButtonText("Browse…")
+					.setTooltip("Open a file picker to choose a script")
+					.onClick(async () => {
+						try {
+							const { remote } = require("electron");
+							const result: string[] | undefined =
+								remote.dialog.showOpenDialogSync(
+									remote.getCurrentWindow(),
+									{
+										title: "Select a custom script",
+										properties: ["openFile"],
+										filters: [
+											{
+												name: "Scripts",
+												extensions: ["js", "ts"],
+											},
+										],
+									},
+								);
+							const chosen = result?.[0];
+							if (!chosen) return;
+							const vaultPath = (
+								this.app.vault.adapter as any
+							).basePath as string;
+							const normalizedChosen = chosen
+								.replace(/\\/g, "/")
+								.toLowerCase();
+							const normalizedVault = vaultPath
+								.replace(/\\/g, "/")
+								.toLowerCase();
+							if (!normalizedChosen.startsWith(normalizedVault)) {
+								new Notice(
+									"⚠️ Script must be a file inside the vault.",
+								);
+								return;
+							}
+							const relative = chosen
+								.slice(vaultPath.length)
+								.replace(/\\/g, "/")
+								.replace(/^\/+/, "");
+							if (
+								!this.plugin.settings.customScriptPaths.includes(
+									relative,
+								)
+							) {
+								this.plugin.settings.customScriptPaths.push(
+									relative,
+								);
+								await this.plugin.saveSettings();
+							}
+							this.display();
+						} catch (e) {
+							new Notice(
+								"⚠️ Could not open file picker. Set the path manually.",
+							);
+							console.error("[SvelteExporter] Browse error:", e);
+						}
+					});
+			});
+
 		// ── Export cache ──────────────────────────────────────────────────
 		containerEl.createEl("h3", { text: "Export cache" });
 
@@ -508,7 +610,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			} else if (child instanceof TFile) {
 				if (
 					child.extension === "md" ||
-					IMAGE_EXTENSIONS.has(child.extension)
+					STATIC_PASSTHROUGH_EXTENSIONS.has(child.extension)
 				) {
 					this.renderFileNode(container, child, depth);
 				}
@@ -634,7 +736,8 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 
 		const labelWrap = row.createSpan({ cls: "svelte-exporter-label" });
 		const isImage = IMAGE_EXTENSIONS.has(file.extension);
-		const icon = isImage ? "🖼️" : "📄";
+		const isDataFile = file.extension === "json";
+		const icon = isImage ? "🖼️" : isDataFile ? "🗂️" : "📄";
 		const isCached = this.cachedPaths.has(file.path);
 		const span = labelWrap.createSpan({
 			text: `${icon} ${file.basename}${isCached ? " ✓" : ""}`,

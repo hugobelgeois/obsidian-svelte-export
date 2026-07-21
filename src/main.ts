@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import { Notice, Plugin, TAbstractFile, TFile } from "obsidian";
 import * as path from "path";
-import { IMAGE_EXTENSIONS, sanitizeRoutePath } from "./constants";
+import { sanitizeRoutePath, STATIC_PASSTHROUGH_EXTENSIONS } from "./constants";
 import { computeNodeColors } from "./graphColors";
 import { exportFile } from "./pageexporter";
 import { computeStyleSettingsClasses, ensureSvelteProject } from "./scaffold";
@@ -68,6 +68,7 @@ export default class SvelteExporterPlugin extends Plugin {
 
 		this.writeDefaultPage(destinationPath, files);
 		this.writeFavicon(destinationPath, vaultPath);
+		this.writeCustomScripts(destinationPath, vaultPath);
 
 		// ── Write graphConfig.json ───────────────────────────────────────────
 		const graphConfigPath = path.join(
@@ -249,21 +250,23 @@ export default class SvelteExporterPlugin extends Plugin {
 		for (const file of files) {
 			try {
 				const mtime = file.stat.mtime;
-				const isImage = IMAGE_EXTENSIONS.has(file.extension);
+				const isStaticPassthrough = STATIC_PASSTHROUGH_EXTENSIONS.has(
+					file.extension,
+				);
 				const ownRoute = "/" + sanitizeRoutePath(file.path);
 				// A file whose links were never recorded (e.g. right after
 				// upgrading to this feature) must be re-exported even if the
 				// mtime cache would otherwise skip it, or its links.json
 				// entry would stay permanently missing.
 				const hasLinkData =
-					isImage ||
+					isStaticPassthrough ||
 					Object.prototype.hasOwnProperty.call(linksMap, ownRoute);
 
 				// scaffold.ts wipes static/ on every export (clean slate), so
-				// images must always be re-copied — the mtime cache can only
-				// be trusted to skip the (expensive) markdown transform.
+				// these files must always be re-copied — the mtime cache can
+				// only be trusted to skip the (expensive) markdown transform.
 				if (
-					!isImage &&
+					!isStaticPassthrough &&
 					hasLinkData &&
 					cache[file.path] !== undefined &&
 					cache[file.path] >= mtime
@@ -272,8 +275,8 @@ export default class SvelteExporterPlugin extends Plugin {
 					continue;
 				}
 
-				if (isImage) {
-					// Copy image to /static/ — served at root URL by SvelteKit
+				if (isStaticPassthrough) {
+					// Copy flat to /static/ — served at root URL by SvelteKit
 					const srcPath = path.join(vaultPath, file.path);
 					const destPath = path.join(staticDir, file.name);
 					fs.copyFileSync(srcPath, destPath);
@@ -346,7 +349,7 @@ export default class SvelteExporterPlugin extends Plugin {
 			if (
 				node instanceof TFile &&
 				(node.extension === "md" ||
-					IMAGE_EXTENSIONS.has(node.extension)) &&
+					STATIC_PASSTHROUGH_EXTENSIONS.has(node.extension)) &&
 				!seen.has(node.path)
 			) {
 				seen.add(node.path);
@@ -495,6 +498,49 @@ export default class SvelteExporterPlugin extends Plugin {
 		}
 
 		fs.writeFileSync(appHtmlPath, html, "utf-8");
+	}
+
+	/**
+	 * Copies every file in customScriptPaths into src/lib/customScripts/ —
+	 * picked up at build time by the import.meta.glob() call in
+	 * svelte-lib/routes/+layout.svelte, which awaits each module after the
+	 * page mounts and calls its default export (if it's a function). The
+	 * folder is wiped and rewritten on every export (like static/ in
+	 * scaffold.ts) so a script removed from settings doesn't linger in the
+	 * exported project. Subfolders are flattened into the filename (e.g.
+	 * "scripts/foo.ts" → "scripts__foo.ts") so two files with the same
+	 * basename in different vault folders can't collide once copied flat.
+	 */
+	private writeCustomScripts(destinationPath: string, vaultPath: string) {
+		const scriptsDir = path.join(
+			destinationPath,
+			"src",
+			"lib",
+			"customScripts",
+		);
+		if (fs.existsSync(scriptsDir)) {
+			fs.rmSync(scriptsDir, { recursive: true, force: true });
+		}
+
+		const scriptPaths = this.settings.customScriptPaths ?? [];
+		if (!scriptPaths.length) return;
+
+		fs.mkdirSync(scriptsDir, { recursive: true });
+		for (const scriptPath of scriptPaths) {
+			const srcPath = path.join(vaultPath, scriptPath);
+			if (!fs.existsSync(srcPath)) {
+				new Notice(
+					`⚠️ Custom script not found in vault: ${scriptPath}`,
+				);
+				continue;
+			}
+			// Strip any leading dot (e.g. a source path under ".obsidian/...")
+			// — Vite's import.meta.glob excludes dotfiles by default, so a
+			// flattened name starting with "." would silently never match
+			// the "*.{js,ts}" pattern in +layout.svelte.
+			const flatName = scriptPath.replace(/\//g, "__").replace(/^\.+/, "");
+			fs.copyFileSync(srcPath, path.join(scriptsDir, flatName));
+		}
 	}
 
 	// ── Cache ──────────────────────────────────────────────────────────────

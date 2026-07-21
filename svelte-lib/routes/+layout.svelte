@@ -13,6 +13,18 @@
 
 	const { children }: { children: Snippet } = $props();
 
+	// User-supplied .js/.ts files (see the plugin's "Custom scripts"
+	// setting), copied in at export time by writeCustomScripts() in
+	// main.ts. Lazy (not `eager: true`) so nothing runs during SSR/
+	// prerender — only after hydration in onMount below, where each
+	// module's default export (if a function) is called once. A relative
+	// path, not the "$lib" alias — import.meta.glob resolves patterns via
+	// fast-glob against the filesystem, not through Vite's normal module
+	// resolver, so it only reliably matches aliases backed by an absolute
+	// resolve.alias entry; a relative path sidesteps that alias-resolution
+	// step, which otherwise silently returns an empty match (no error).
+	const customScripts = import.meta.glob("../lib/customScripts/*.{js,ts}");
+
 	// The graph page's own content IS the graph — the right sidebar's mini
 	// preview of the same graph would be redundant, so it's not just
 	// collapsed there but not rendered at all. It's also where the
@@ -100,6 +112,14 @@
 		if (window.innerWidth <= 768) {
 			leftCollapsed = true;
 			rightCollapsed = true;
+		}
+
+		for (const importScript of Object.values(customScripts)) {
+			importScript()
+				.then((mod: any) => {
+					if (typeof mod?.default === "function") mod.default();
+				})
+				.catch((e) => console.error("[custom script] failed to load", e));
 		}
 	});
 </script>
