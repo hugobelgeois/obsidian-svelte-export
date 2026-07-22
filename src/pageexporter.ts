@@ -376,6 +376,8 @@ function markdownToSvelte(
 	const pageTitle = meta["title"] || title;
 	const pageDescription = meta["description"] || "";
 	const isFullWidth = meta["full-width"]?.trim().toLowerCase() === "true";
+	const isFullHeight = meta["full-height"]?.trim().toLowerCase() === "true";
+	const isHideTitle = meta["hide-title"]?.trim().toLowerCase() === "true";
 
 	// Pre-process wikilinks before splitting into sections
 	const linkedRoutes = new Set<string>();
@@ -409,6 +411,16 @@ function markdownToSvelte(
 		.map((s) => `\t\t{@render ${s.snippetName}()}`)
 		.join("\n");
 
+	// `title` still goes in <svelte:head> regardless — the browser tab and
+	// SEO description shouldn't disappear just because the on-page heading
+	// (the h1 a reader sees) is hidden via `hide-title`.
+	const headerBlock = isHideTitle
+		? ""
+		: `  <header class="md-header">
+    <h1>${pageTitle}</h1>${pageDescription ? `\n    <p class="description">${pageDescription}</p>` : ""}
+  </header>
+`;
+
 	const pageSvelte = `<script lang="ts">
   import { onDestroy } from "svelte";
   import { tocHeadings } from "$lib/stores";
@@ -426,10 +438,7 @@ function markdownToSvelte(
 </svelte:head>
 
 <article class="md-page">
-  <header class="md-header">
-    <h1>${pageTitle}</h1>${pageDescription ? `\n    <p class="description">${pageDescription}</p>` : ""}
-  </header>
-  <div class="markdown-rendered">
+${headerBlock}  <div class="markdown-rendered">
 ${topLevelCalls}
   </div>
 </article>
@@ -447,6 +456,7 @@ export const load: PageLoad = () => ({
   pageTitle: ${JSON.stringify(pageTitle)},
   pageDescription: ${JSON.stringify(pageDescription)},
   fullBleed: ${isFullWidth},
+  fullHeight: ${isFullHeight},
 });
 `;
 

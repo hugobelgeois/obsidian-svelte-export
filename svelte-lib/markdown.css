@@ -33,6 +33,39 @@
   padding: 0 !important;
 }
 
+/* `full-height: true` on its own (without `full-width`) fills the sizer's
+   height while keeping the normal 700px reading-width column. */
+.markdown-preview-sizer.full-height {
+  height: 100% !important;
+}
+
+/* `height: 100%` on the sizer only grows the sizer itself — block elements
+   default to height:auto, so it doesn't reach the actual note content
+   (.md-page / .markdown-rendered) without this. Flex the chain down so a
+   full-height page's content area can actually stretch (e.g. to host an
+   embed that itself wants to fill the remaining vertical space below the
+   title). min-height:0 keeps flex items from refusing to shrink below
+   their content size, which would otherwise defeat overflow scrolling. */
+.markdown-preview-sizer.full-bleed,
+.markdown-preview-sizer.full-height {
+  display: flex;
+  flex-direction: column;
+}
+
+.markdown-preview-sizer.full-bleed > .md-page,
+.markdown-preview-sizer.full-height > .md-page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.markdown-preview-sizer.full-bleed > .md-page > .markdown-rendered,
+.markdown-preview-sizer.full-height > .md-page > .markdown-rendered {
+  flex: 1;
+  min-height: 0;
+}
+
 /* ── Headings ─────────────────────────────────────────────── */
 
 .markdown-rendered h1,

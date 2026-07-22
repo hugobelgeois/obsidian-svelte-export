@@ -21,7 +21,11 @@
 		data-type="markdown"
 		bind:this={contentEl}
 	>
-		<div class="markdown-preview-sizer" class:full-bleed={$page.data.fullBleed}>
+		<div
+			class="markdown-preview-sizer"
+			class:full-bleed={$page.data.fullBleed}
+			class:full-height={$page.data.fullHeight}
+		>
 			{@render children()}
 		</div>
 	</div>
