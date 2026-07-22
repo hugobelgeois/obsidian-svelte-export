@@ -57,8 +57,7 @@
 						class="svg-icon"
 					>
 						{#if side === "left"}
-							<path d="m7 20 5-5 5 5" />
-							<path d="m7 4 5 5 5-5" />
+							<path d="M15 18l-6-6 6-6" />
 						{:else}
 							<path d="M9 18l6-6-6-6" />
 						{/if}

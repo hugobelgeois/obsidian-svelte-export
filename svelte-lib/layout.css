@@ -60,13 +60,6 @@ a { text-decoration: none; color: inherit; }
   border: none;
 }
 
-/* Whenever a sidebar is collapsed, its reveal button floats over the
-   content — give the central content enough top clearance that the
-   button never sits on top of a page title. */
-.workspace:has(.workspace-split.mod-sidedock.is-collapsed) .workspace-split.mod-root {
-  padding-top: 44px;
-}
-
 .sidebar-reveal-btn {
   position: fixed;
   top: 8px;
@@ -298,12 +291,6 @@ a { text-decoration: none; color: inherit; }
   .tree-item-self {
     padding-top: 7px;
     padding-bottom: 7px;
-  }
-
-  /* .sidebar-reveal-btn grew to 40px above — give the reserved clearance
-     (set unconditionally near the top of this file) room to match. */
-  .workspace:has(.workspace-split.mod-sidedock.is-collapsed) .workspace-split.mod-root {
-    padding-top: 56px;
   }
 
   /* iOS Safari zooms the whole page in on focus for any input under 16px. */

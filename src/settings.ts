@@ -633,7 +633,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		const labelWrap = row.createSpan({ cls: "svelte-exporter-label" });
 		labelWrap.createSpan({
 			cls: "svelte-exporter-folder-label",
-			text: `📁 ${folder.name}`,
+			text: folder.name,
 		});
 
 		// Export checkbox
@@ -735,14 +735,16 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		row.style.paddingLeft = `${depth * 18 + 20}px`;
 
 		const labelWrap = row.createSpan({ cls: "svelte-exporter-label" });
-		const isImage = IMAGE_EXTENSIONS.has(file.extension);
-		const isDataFile = file.extension === "json";
-		const icon = isImage ? "🖼️" : isDataFile ? "🗂️" : "📄";
 		const isCached = this.cachedPaths.has(file.path);
 		const span = labelWrap.createSpan({
-			text: `${icon} ${file.basename}${isCached ? " ✓" : ""}`,
+			text: `${file.basename}${isCached ? " ✓" : ""}`,
 		});
 		if (isCached) span.style.color = "var(--text-muted)";
+		// Same "nav-file-tag" badge Obsidian's own file explorer shows next to
+		// non-markdown files (e.g. "PNG", "JSON") — markdown files get none.
+		if (file.extension !== "md") {
+			labelWrap.createSpan({ cls: "nav-file-tag", text: file.extension });
+		}
 
 		// Export checkbox
 		const exportCb = row.createEl("input", {
@@ -957,6 +959,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
         font-weight: 500;
       }
       .svelte-exporter-folder-label:hover { color: var(--interactive-accent); }
+      .svelte-exporter-label .nav-file-tag { margin-inline-start: 6px; }
 
       /* Export checkbox */
       .sve-cb {

@@ -174,7 +174,7 @@
 	{/snippet}
 
 	{#if leftCollapsed}
-		{@render revealButton("left", "Expand left sidebar", openLeft, "M3 8L12 17L21 8")}
+		{@render revealButton("left", "Expand left sidebar", openLeft, "M9 18l6-6-6-6")}
 	{/if}
 	{#if rightCollapsed && !onGraphPage}
 		{@render revealButton("right", "Expand right sidebar", openRight, "M15 18l-6-6 6-6")}
