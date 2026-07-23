@@ -36,3 +36,128 @@
 	text-overflow: ellipsis;
 	opacity: 0.7;
 }
+
+/* ── Settings tab: file/folder tree ─────────────────────────────────────── */
+
+.sve-header-row {
+	display: flex;
+	align-items: center;
+	padding: 4px 8px 4px 0;
+	font-size: 0.72rem;
+	color: var(--text-muted);
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	user-select: none;
+}
+.sve-header-spacer {
+	flex: 1;
+}
+.sve-col-label {
+	width: 52px;
+	text-align: center;
+	flex-shrink: 0;
+}
+
+.svelte-exporter-tree {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	padding: 0.5rem 0;
+	max-height: 420px;
+	overflow-y: auto;
+	background: var(--background-primary);
+	margin-top: 0.25rem;
+	user-select: none;
+}
+
+.svelte-exporter-row {
+	display: flex;
+	align-items: center;
+	padding: 3px 8px;
+	cursor: default;
+	font-size: 0.9rem;
+	color: var(--text-normal);
+	transition: background 0.1s;
+}
+.svelte-exporter-row:hover {
+	background: var(--background-modifier-hover);
+	border-radius: 4px;
+}
+
+.svelte-exporter-arrow {
+	font-size: 0.65rem;
+	color: var(--text-muted);
+	cursor: pointer;
+	min-width: 16px;
+	text-align: center;
+	flex-shrink: 0;
+	margin-right: 4px;
+}
+.svelte-exporter-arrow:hover {
+	color: var(--text-normal);
+}
+
+.svelte-exporter-children.sve-collapsed {
+	display: none;
+}
+
+.svelte-exporter-label {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+.svelte-exporter-folder-label {
+	cursor: pointer;
+	font-weight: 500;
+}
+.svelte-exporter-folder-label:hover {
+	color: var(--interactive-accent);
+}
+.svelte-exporter-label .nav-file-tag {
+	margin-inline-start: 6px;
+}
+.sve-cached-label {
+	color: var(--text-muted);
+}
+
+/* Export checkbox */
+.sve-cb {
+	width: 52px;
+	flex-shrink: 0;
+	cursor: pointer;
+	margin: 0;
+	accent-color: var(--interactive-accent);
+}
+.sve-cb:disabled {
+	opacity: 0.35;
+	cursor: not-allowed;
+}
+
+/* Eye button */
+.sve-eye-btn {
+	width: 52px;
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: none;
+	border: none;
+	padding: 2px;
+	cursor: pointer;
+	color: var(--interactive-accent);
+	border-radius: 4px;
+	transition: color 0.15s, background 0.15s;
+}
+.sve-eye-btn:hover {
+	background: var(--background-modifier-hover);
+}
+.sve-eye-btn.sve-eye-hidden {
+	color: var(--text-muted);
+}
+.sve-eye-btn.sve-eye-disabled {
+	opacity: 0.3;
+	cursor: not-allowed;
+	pointer-events: none;
+}

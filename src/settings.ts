@@ -1,18 +1,24 @@
+import * as fs from "fs";
 import {
 	App,
 	Notice,
 	PluginSettingTab,
 	Setting,
+	setIcon,
 	TAbstractFile,
+	TextComponent,
 	TFile,
 	TFolder,
 } from "obsidian";
+import * as path from "path";
 import {
 	IMAGE_EXTENSIONS,
 	sanitizeRoutePath,
 	STATIC_PASSTHROUGH_EXTENSIONS,
 } from "./constants";
+import { showOpenDialogSync } from "./electronDialog";
 import type SvelteExporterPlugin from "./main";
+import { getVaultBasePath } from "./obsidianUtil";
 
 export type MarkdownStyle = "obsidian" | "custom" | "none";
 
@@ -66,10 +72,6 @@ export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	customScriptPaths: [],
 };
 
-// SVG icons for the eye toggle
-const EYE_OPEN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
-const EYE_CLOSED_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
-
 export class SvelteExporterSettingTab extends PluginSettingTab {
 	plugin: SvelteExporterPlugin;
 
@@ -107,9 +109,10 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl("h2", { text: "Svelte Exporter" });
+		new Setting(containerEl).setName("Svelte Exporter").setHeading();
 
 		// ── Destination path ──────────────────────────────────────────────
+		let destText: TextComponent;
 		new Setting(containerEl)
 			.setName("Destination path")
 			.setDesc(
@@ -117,13 +120,13 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 					"The vault directory structure will be reproduced under src/routes/.",
 			)
 			.addText((text) => {
-				text.setPlaceholder("/home/user/my-svelte-site")
+				destText = text;
+				text.setPlaceholder("/home/user/my-exported-site")
 					.setValue(this.plugin.settings.destinationPath)
 					.onChange(async (value) => {
 						this.plugin.settings.destinationPath = value.trim();
 						await this.plugin.saveSettings();
 					});
-				(this as any)._destTextComponent = text;
 			})
 			.addButton((btn) => {
 				btn.setButtonText("Browse…")
@@ -132,29 +135,18 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 					)
 					.onClick(() => {
 						try {
-							const { remote } = require("electron");
-							const result: string[] | undefined =
-								remote.dialog.showOpenDialogSync(
-									remote.getCurrentWindow(),
-									{
-										title: "Select export destination folder",
-										properties: [
-											"openDirectory",
-											"createDirectory",
-										],
-									},
-								);
-							const chosen = result?.[0];
+							const chosen = showOpenDialogSync({
+								title: "Select export destination folder",
+								properties: ["openDirectory", "createDirectory"],
+							})?.[0];
 							if (chosen) {
 								this.plugin.settings.destinationPath = chosen;
-								this.plugin.saveSettings();
-								const textCmp = (this as any)
-									._destTextComponent;
-								if (textCmp) textCmp.setValue(chosen);
+								void this.plugin.saveSettings();
+								destText.setValue(chosen);
 							}
 						} catch (e) {
 							new Notice(
-								"⚠️ Could not open folder picker. Set the path manually.",
+								"⚠️ could not open folder picker. Set the path manually.",
 							);
 							console.error("[SvelteExporter] Browse error:", e);
 						}
@@ -177,18 +169,18 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			);
 
 		// ── Theme ───────────────────────────────────────────────────────────
-		containerEl.createEl("h3", { text: "Appearance" });
+		new Setting(containerEl).setName("Appearance").setHeading();
 
-		// Enumerate available themes from .obsidian/themes/
-		const vaultPath = (this.app.vault.adapter as any).basePath as string;
-		const themesDir = require("path").join(
+		// Enumerate available themes from the vault's configured themes/ folder
+		const vaultPath = getVaultBasePath(this.app);
+		const themesDir = path.join(
 			vaultPath,
-			".obsidian",
+			this.app.vault.configDir,
 			"themes",
 		);
 		const availableThemes: string[] = [];
-		if (require("fs").existsSync(themesDir)) {
-			for (const entry of require("fs").readdirSync(themesDir, {
+		if (fs.existsSync(themesDir)) {
+			for (const entry of fs.readdirSync(themesDir, {
 				withFileTypes: true,
 			})) {
 				if (entry.isDirectory()) availableThemes.push(entry.name);
@@ -206,7 +198,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			.setName("Site theme")
 			.setDesc(
 				"Choose which Obsidian theme to use for the exported site. " +
-					"Themes are read from your vault's .obsidian/themes/ folder.",
+					`Themes are read from your vault's ${this.app.vault.configDir}/themes/ folder.`,
 			)
 			.addDropdown((drop) => {
 				for (const [value, label] of Object.entries(themeOptions)) {
@@ -219,6 +211,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				});
 			});
 
+		let faviconText: TextComponent;
 		new Setting(containerEl)
 			.setName("Favicon")
 			.setDesc(
@@ -227,39 +220,31 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 					"custom favicon.",
 			)
 			.addText((text) => {
+				faviconText = text;
 				text.setPlaceholder("Images/logo.png")
 					.setValue(this.plugin.settings.faviconPath)
 					.onChange(async (value) => {
 						this.plugin.settings.faviconPath = value.trim();
 						await this.plugin.saveSettings();
 					});
-				(this as any)._faviconTextComponent = text;
 			})
 			.addButton((btn) => {
 				btn.setButtonText("Browse…")
 					.setTooltip("Open a file picker to choose the favicon image")
 					.onClick(() => {
 						try {
-							const { remote } = require("electron");
-							const result: string[] | undefined =
-								remote.dialog.showOpenDialogSync(
-									remote.getCurrentWindow(),
+							const chosen = showOpenDialogSync({
+								title: "Select favicon image",
+								properties: ["openFile"],
+								filters: [
 									{
-										title: "Select favicon image",
-										properties: ["openFile"],
-										filters: [
-											{
-												name: "Images",
-												extensions: [...IMAGE_EXTENSIONS, "ico"],
-											},
-										],
+										name: "Images",
+										extensions: [...IMAGE_EXTENSIONS, "ico"],
 									},
-								);
-							const chosen = result?.[0];
+								],
+							})?.[0];
 							if (!chosen) return;
-							const vaultPath = (
-								this.app.vault.adapter as any
-							).basePath as string;
+							const vaultPath = getVaultBasePath(this.app);
 							const normalizedChosen = chosen
 								.replace(/\\/g, "/")
 								.toLowerCase();
@@ -268,7 +253,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 								.toLowerCase();
 							if (!normalizedChosen.startsWith(normalizedVault)) {
 								new Notice(
-									"⚠️ Favicon must be a file inside the vault.",
+									"⚠️ favicon must be a file inside the vault.",
 								);
 								return;
 							}
@@ -277,12 +262,11 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 								.replace(/\\/g, "/")
 								.replace(/^\/+/, "");
 							this.plugin.settings.faviconPath = relative;
-							this.plugin.saveSettings();
-							const textCmp = (this as any)._faviconTextComponent;
-							if (textCmp) textCmp.setValue(relative);
+							void this.plugin.saveSettings();
+							faviconText.setValue(relative);
 						} catch (e) {
 							new Notice(
-								"⚠️ Could not open file picker. Set the path manually.",
+								"⚠️ could not open file picker. Set the path manually.",
 							);
 							console.error("[SvelteExporter] Browse error:", e);
 						}
@@ -308,7 +292,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			});
 
 		// ── Default page ──────────────────────────────────────────────────
-		containerEl.createEl("h3", { text: "Default page" });
+		new Setting(containerEl).setName("Default page").setHeading();
 
 		const defaultPageOptions: Record<string, string> = {
 			"": "Welcome screen (default)",
@@ -361,12 +345,10 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		// svelte-lib/lib/animationRegistry.ts, which loads the same folder
 		// at build time). Adding or removing a file changes what's offered
 		// here with no other wiring needed.
-		const path = require("path");
-		const fs = require("fs");
 		const pluginDir = path.join(
 			vaultPath,
 			this.plugin.manifest.dir ??
-				`.obsidian/plugins/${this.plugin.manifest.id}`,
+				`${this.app.vault.configDir}/plugins/${this.plugin.manifest.id}`,
 		);
 		const animationsDir = path.join(
 			pluginDir,
@@ -392,7 +374,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				const match = content.match(
 					/export const label\s*=\s*["'`](.*?)["'`]/,
 				);
-				animationOptions[id] = match ? match[1] : id;
+				animationOptions[id] = match?.[1] ?? id;
 			}
 		}
 
@@ -427,7 +409,8 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			.setDesc(
 				"In the graph view's big view (popup and full-page), color " +
 					"nodes using Obsidian's own graph \"Groups\" " +
-					"(the Graph view's Groups tab, saved in .obsidian/graph.json) " +
+					"(the Graph view's Groups tab, saved in " +
+					`${this.app.vault.configDir}/graph.json) ` +
 					"— a note matching a saved group's query is colored the " +
 					"same way there. Only path:/file:/tag: queries are " +
 					"supported; more complex ones (OR, regex, …) are ignored.",
@@ -442,7 +425,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			);
 
 		// ── Custom scripts ──────────────────────────────────────────────────
-		containerEl.createEl("h3", { text: "Custom scripts" });
+		new Setting(containerEl).setName("Custom scripts").setHeading();
 		containerEl.createEl("p", {
 			text:
 				"Import .js/.ts files from your vault to add custom functionality " +
@@ -454,7 +437,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 
 		for (const scriptPath of this.plugin.settings.customScriptPaths ?? []) {
 			new Setting(containerEl)
-				.setName(require("path").basename(scriptPath))
+				.setName(path.basename(scriptPath))
 				.setDesc(scriptPath)
 				.addButton((btn) => {
 					btn.setIcon("trash")
@@ -478,26 +461,15 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 					.setTooltip("Open a file picker to choose a script")
 					.onClick(async () => {
 						try {
-							const { remote } = require("electron");
-							const result: string[] | undefined =
-								remote.dialog.showOpenDialogSync(
-									remote.getCurrentWindow(),
-									{
-										title: "Select a custom script",
-										properties: ["openFile"],
-										filters: [
-											{
-												name: "Scripts",
-												extensions: ["js", "ts"],
-											},
-										],
-									},
-								);
-							const chosen = result?.[0];
+							const chosen = showOpenDialogSync({
+								title: "Select a custom script",
+								properties: ["openFile"],
+								filters: [
+									{ name: "Scripts", extensions: ["js", "ts"] },
+								],
+							})?.[0];
 							if (!chosen) return;
-							const vaultPath = (
-								this.app.vault.adapter as any
-							).basePath as string;
+							const vaultPath = getVaultBasePath(this.app);
 							const normalizedChosen = chosen
 								.replace(/\\/g, "/")
 								.toLowerCase();
@@ -506,7 +478,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 								.toLowerCase();
 							if (!normalizedChosen.startsWith(normalizedVault)) {
 								new Notice(
-									"⚠️ Script must be a file inside the vault.",
+									"⚠️ script must be a file inside the vault.",
 								);
 								return;
 							}
@@ -527,7 +499,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 							this.display();
 						} catch (e) {
 							new Notice(
-								"⚠️ Could not open file picker. Set the path manually.",
+								"⚠️ could not open file picker. Set the path manually.",
 							);
 							console.error("[SvelteExporter] Browse error:", e);
 						}
@@ -535,20 +507,20 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			});
 
 		// ── Export cache ──────────────────────────────────────────────────
-		containerEl.createEl("h3", { text: "Export cache" });
+		new Setting(containerEl).setName("Export cache").setHeading();
 
 		this.cachedPaths = new Set();
 		const cacheFile = this.plugin.settings.destinationPath
-			? require("path").join(
+			? path.join(
 					this.plugin.settings.destinationPath,
 					".export-cache.json",
 				)
 			: null;
-		if (cacheFile && require("fs").existsSync(cacheFile)) {
+		if (cacheFile && fs.existsSync(cacheFile)) {
 			try {
 				const data = JSON.parse(
-					require("fs").readFileSync(cacheFile, "utf-8"),
-				);
+					fs.readFileSync(cacheFile, "utf-8"),
+				) as Record<string, number>;
 				this.cachedPaths = new Set(Object.keys(data));
 			} catch {
 				/* ignore */
@@ -569,14 +541,14 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 					.onClick(async () => {
 						await this.plugin.clearCache();
 						new Notice(
-							"🗑️ Export cache cleared. All files will be re-exported on the next run.",
+							"🗑️ export cache cleared. All files will be re-exported on the next run.",
 						);
 						this.display();
 					});
 			});
 
 		// ── File / folder selector ────────────────────────────────────────
-		containerEl.createEl("h3", { text: "Files to export" });
+		new Setting(containerEl).setName("Files to export").setHeading();
 		containerEl.createEl("p", {
 			text: "Select files and folders to export. Use the eye icon to hide items from the site's file tree while still exporting them.",
 			cls: "setting-item-description",
@@ -591,7 +563,6 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		const treeContainer = containerEl.createDiv({
 			cls: "svelte-exporter-tree",
 		});
-		this.injectTreeStyles(containerEl);
 		this.renderTree(treeContainer, this.app.vault.getRoot());
 	}
 
@@ -639,7 +610,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		// Export checkbox
 		const exportCb = row.createEl("input", {
 			type: "checkbox",
-		}) as HTMLInputElement;
+		});
 		exportCb.title = "Export";
 		exportCb.className = "sve-cb";
 		// Checked as soon as the folder itself OR any descendant is selected,
@@ -655,7 +626,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		const isHidden =
 			this.plugin.settings.hiddenPaths.includes(folder.path) ||
 			this.isAncestorHidden(folder);
-		eyeBtn.innerHTML = isHidden ? EYE_CLOSED_SVG : EYE_OPEN_SVG;
+		setIcon(eyeBtn, isHidden ? "eye-off" : "eye");
 		eyeBtn.title = isHidden
 			? "Hidden from file tree"
 			: "Visible in file tree";
@@ -669,65 +640,71 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		const childrenEl = container.createDiv({
 			cls: "svelte-exporter-children",
 		});
-		childrenEl.style.display = isExpanded ? "block" : "none";
+		childrenEl.toggleClass("sve-collapsed", !isExpanded);
 		this.renderTree(childrenEl, folder, depth + 1);
 
 		const toggleExpand = () => {
 			if (this.expandedFolders.has(folder.path)) {
 				this.expandedFolders.delete(folder.path);
-				childrenEl.style.display = "none";
+				childrenEl.addClass("sve-collapsed");
 				arrow.textContent = "▶";
 			} else {
 				this.expandedFolders.add(folder.path);
-				childrenEl.style.display = "block";
+				childrenEl.removeClass("sve-collapsed");
 				arrow.textContent = "▼";
 			}
 		};
 		arrow.addEventListener("click", toggleExpand);
 		labelWrap.addEventListener("click", toggleExpand);
 
-		exportCb.addEventListener("change", async () => {
-			if (exportCb.checked) {
-				// Select folder AND all descendants explicitly (2.1 reverse:
-				// checking a parent selects every child).
-				this.selectPath(folder.path);
-				this.selectAllDescendants(folder);
-			} else {
-				// 2.1: unchecking a parent deselects every descendant.
-				// deselectByPrefix works on the stored path strings directly,
-				// so it also clears stale entries left over from files that
-				// were since renamed/moved — deselectAllDescendants (which
-				// only walks the *current* live vault tree) could leave those
-				// behind and make the checkbox impossible to fully uncheck.
-				this.deselectByPrefix(folder.path);
-				this.deselectHiddenByPrefix(folder.path);
-			}
-			await this.plugin.saveSettings();
-			// Refresh just the tree: ancestors above this folder may also
-			// need their checked state recomputed, without resetting scroll.
-			this.refreshTree();
-		});
+		exportCb.addEventListener(
+			"change",
+			this.onAsync(async () => {
+				if (exportCb.checked) {
+					// Select folder AND all descendants explicitly (2.1 reverse:
+					// checking a parent selects every child).
+					this.selectPath(folder.path);
+					this.selectAllDescendants(folder);
+				} else {
+					// 2.1: unchecking a parent deselects every descendant.
+					// deselectByPrefix works on the stored path strings directly,
+					// so it also clears stale entries left over from files that
+					// were since renamed/moved — deselectAllDescendants (which
+					// only walks the *current* live vault tree) could leave those
+					// behind and make the checkbox impossible to fully uncheck.
+					this.deselectByPrefix(folder.path);
+					this.deselectHiddenByPrefix(folder.path);
+				}
+				await this.plugin.saveSettings();
+				// Refresh just the tree: ancestors above this folder may also
+				// need their checked state recomputed, without resetting scroll.
+				this.refreshTree();
+			}),
+		);
 
-		eyeBtn.addEventListener("click", async () => {
-			const nowHidden = this.plugin.settings.hiddenPaths.includes(
-				folder.path,
-			);
-			if (nowHidden) {
-				// Making a parent visible again makes every descendant
-				// explicitly visible too (mirrors Export's uncheck cascade).
-				this.deselectHiddenByPrefix(folder.path);
-			} else {
-				// Hiding a parent explicitly hides every descendant —
-				// files AND folders — not just this folder itself.
-				this.selectHiddenPath(folder.path);
-				this.hideAllDescendants(folder);
-			}
-			await this.plugin.saveSettings();
-			// Same logic as Export: refresh the tree (not just this button)
-			// so descendants' disabled/hidden state updates too, without
-			// resetting scroll position.
-			this.refreshTree();
-		});
+		eyeBtn.addEventListener(
+			"click",
+			this.onAsync(async () => {
+				const nowHidden = this.plugin.settings.hiddenPaths.includes(
+					folder.path,
+				);
+				if (nowHidden) {
+					// Making a parent visible again makes every descendant
+					// explicitly visible too (mirrors Export's uncheck cascade).
+					this.deselectHiddenByPrefix(folder.path);
+				} else {
+					// Hiding a parent explicitly hides every descendant —
+					// files AND folders — not just this folder itself.
+					this.selectHiddenPath(folder.path);
+					this.hideAllDescendants(folder);
+				}
+				await this.plugin.saveSettings();
+				// Same logic as Export: refresh the tree (not just this button)
+				// so descendants' disabled/hidden state updates too, without
+				// resetting scroll position.
+				this.refreshTree();
+			}),
+		);
 	}
 
 	private renderFileNode(container: HTMLElement, file: TFile, depth: number) {
@@ -736,10 +713,10 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 
 		const labelWrap = row.createSpan({ cls: "svelte-exporter-label" });
 		const isCached = this.cachedPaths.has(file.path);
-		const span = labelWrap.createSpan({
+		labelWrap.createSpan({
+			cls: isCached ? "sve-cached-label" : undefined,
 			text: `${file.basename}${isCached ? " ✓" : ""}`,
 		});
-		if (isCached) span.style.color = "var(--text-muted)";
 		// Same "nav-file-tag" badge Obsidian's own file explorer shows next to
 		// non-markdown files (e.g. "PNG", "JSON") — markdown files get none.
 		if (file.extension !== "md") {
@@ -749,7 +726,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		// Export checkbox
 		const exportCb = row.createEl("input", {
 			type: "checkbox",
-		}) as HTMLInputElement;
+		});
 		exportCb.title = "Export";
 		exportCb.className = "sve-cb";
 		// Reflects this file's own explicit selection only. When a folder is
@@ -767,7 +744,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		const isHidden =
 			this.plugin.settings.hiddenPaths.includes(file.path) ||
 			ancestorHidden;
-		eyeBtn.innerHTML = isHidden ? EYE_CLOSED_SVG : EYE_OPEN_SVG;
+		setIcon(eyeBtn, isHidden ? "eye-off" : "eye");
 		eyeBtn.title = isHidden
 			? "Hidden from file tree"
 			: "Visible in file tree";
@@ -777,30 +754,43 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			eyeBtn.classList.add("sve-eye-disabled");
 		}
 
-		exportCb.addEventListener("change", async () => {
-			if (exportCb.checked) this.selectPath(file.path);
-			else {
-				this.deselectPath(file.path);
-				this.deselectHiddenPath(file.path);
-			}
-			await this.plugin.saveSettings();
-			// Refresh the tree so every ancestor folder checkbox up the tree
-			// recomputes to "checked" (2.3), without resetting scroll.
-			this.refreshTree();
-		});
+		exportCb.addEventListener(
+			"change",
+			this.onAsync(async () => {
+				if (exportCb.checked) this.selectPath(file.path);
+				else {
+					this.deselectPath(file.path);
+					this.deselectHiddenPath(file.path);
+				}
+				await this.plugin.saveSettings();
+				// Refresh the tree so every ancestor folder checkbox up the tree
+				// recomputes to "checked" (2.3), without resetting scroll.
+				this.refreshTree();
+			}),
+		);
 
-		eyeBtn.addEventListener("click", async () => {
-			const nowHidden = this.plugin.settings.hiddenPaths.includes(
-				file.path,
-			);
-			if (nowHidden) {
-				this.deselectHiddenPath(file.path);
-			} else {
-				this.selectHiddenPath(file.path);
-			}
-			await this.plugin.saveSettings();
-			this.refreshTree();
-		});
+		eyeBtn.addEventListener(
+			"click",
+			this.onAsync(async () => {
+				const nowHidden = this.plugin.settings.hiddenPaths.includes(
+					file.path,
+				);
+				if (nowHidden) {
+					this.deselectHiddenPath(file.path);
+				} else {
+					this.selectHiddenPath(file.path);
+				}
+				await this.plugin.saveSettings();
+				this.refreshTree();
+			}),
+		);
+	}
+
+	/** Wraps an async DOM event handler so it can be passed to addEventListener without a dangling, unhandled promise. */
+	private onAsync(handler: () => Promise<void>): () => void {
+		return () => {
+			void handler();
+		};
 	}
 
 	// ── Selection helpers ─────────────────────────────────────────────────
@@ -886,115 +876,4 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		);
 	}
 
-	// ── Inline styles ─────────────────────────────────────────────────────
-
-	private injectTreeStyles(root: HTMLElement) {
-		if (root.querySelector("#svelte-exporter-style")) return;
-		const style = root.createEl("style");
-		style.id = "svelte-exporter-style";
-		style.textContent = `
-      .sve-header-row {
-        display: flex;
-        align-items: center;
-        padding: 4px 8px 4px 0;
-        font-size: 0.72rem;
-        color: var(--text-muted);
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        user-select: none;
-      }
-      .sve-header-spacer { flex: 1; }
-      .sve-col-label {
-        width: 52px;
-        text-align: center;
-        flex-shrink: 0;
-      }
-
-      .svelte-exporter-tree {
-        border: 1px solid var(--background-modifier-border);
-        border-radius: 6px;
-        padding: 0.5rem 0;
-        max-height: 420px;
-        overflow-y: auto;
-        background: var(--background-primary);
-        margin-top: 0.25rem;
-        user-select: none;
-      }
-
-      .svelte-exporter-row {
-        display: flex;
-        align-items: center;
-        padding: 3px 8px;
-        cursor: default;
-        font-size: 0.9rem;
-        color: var(--text-normal);
-        transition: background 0.1s;
-      }
-      .svelte-exporter-row:hover {
-        background: var(--background-modifier-hover);
-        border-radius: 4px;
-      }
-
-      .svelte-exporter-arrow {
-        font-size: 0.65rem;
-        color: var(--text-muted);
-        cursor: pointer;
-        min-width: 16px;
-        text-align: center;
-        flex-shrink: 0;
-        margin-right: 4px;
-      }
-      .svelte-exporter-arrow:hover { color: var(--text-normal); }
-
-      .svelte-exporter-label {
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        min-width: 0;
-      }
-      .svelte-exporter-folder-label {
-        cursor: pointer;
-        font-weight: 500;
-      }
-      .svelte-exporter-folder-label:hover { color: var(--interactive-accent); }
-      .svelte-exporter-label .nav-file-tag { margin-inline-start: 6px; }
-
-      /* Export checkbox */
-      .sve-cb {
-        width: 52px;
-        flex-shrink: 0;
-        cursor: pointer;
-        margin: 0;
-        accent-color: var(--interactive-accent);
-      }
-      .sve-cb:disabled { opacity: 0.35; cursor: not-allowed; }
-
-      /* Eye button */
-      .sve-eye-btn {
-        width: 52px;
-        flex-shrink: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: none;
-        border: none;
-        padding: 2px;
-        cursor: pointer;
-        color: var(--interactive-accent);
-        border-radius: 4px;
-        transition: color 0.15s, background 0.15s;
-      }
-      .sve-eye-btn:hover { background: var(--background-modifier-hover); }
-      .sve-eye-btn.sve-eye-hidden {
-        color: var(--text-muted);
-      }
-      .sve-eye-btn.sve-eye-disabled {
-        opacity: 0.3;
-        cursor: not-allowed;
-        pointer-events: none;
-      }
-    `;
-	}
 }

@@ -2,8 +2,10 @@ import * as fs from "fs";
 import { Notice, Plugin, TAbstractFile, TFile } from "obsidian";
 import * as path from "path";
 import { sanitizeRoutePath, STATIC_PASSTHROUGH_EXTENSIONS } from "./constants";
+import { openInFileExplorer } from "./electronDialog";
 import { ExportProgressModal } from "./exportModal";
 import { computeNodeColors } from "./graphColors";
+import { getVaultBasePath } from "./obsidianUtil";
 import { exportFile } from "./pageexporter";
 import { computeStyleSettingsClasses, ensureSvelteProject } from "./scaffold";
 import {
@@ -13,6 +15,7 @@ import {
 } from "./settings";
 
 export type ExportCache = Record<string, number>;
+type LinksMap = Record<string, string[]>;
 
 export default class SvelteExporterPlugin extends Plugin {
 	settings: SvelteExporterSettings;
@@ -36,27 +39,28 @@ export default class SvelteExporterPlugin extends Plugin {
 
 		if (!destinationPath) {
 			new Notice(
-				"⚠️ Please set a destination path in the plugin settings.",
+				"⚠️ please set a destination path in the plugin settings.",
 			);
 			return;
 		}
 		if (!selectedPaths?.length) {
 			new Notice(
-				"⚠️ No files selected for export. Check the plugin settings.",
+				"⚠️ no files selected for export. Check the plugin settings.",
 			);
 			return;
 		}
 
 		const files = this.resolveFiles(selectedPaths);
 		if (!files.length) {
-			new Notice("⚠️ No exportable files found in the selected paths.");
+			new Notice("⚠️ no exportable files found in the selected paths.");
 			return;
 		}
 
-		const vaultPath = (this.app.vault.adapter as any).basePath as string;
+		const vaultPath = getVaultBasePath(this.app);
 		const pluginDir = path.join(
 			vaultPath,
-			this.manifest.dir ?? `.obsidian/plugins/${this.manifest.id}`,
+			this.manifest.dir ??
+				`${this.app.vault.configDir}/plugins/${this.manifest.id}`,
 		);
 
 		const progressModal = new ExportProgressModal(this.app, files.length);
@@ -66,6 +70,7 @@ export default class SvelteExporterPlugin extends Plugin {
 			destinationPath,
 			pluginDir,
 			vaultPath,
+			this.app.vault.configDir,
 			this.settings.selectedTheme ?? "",
 			(status) => progressModal.setPreparing(status),
 		);
@@ -122,7 +127,7 @@ export default class SvelteExporterPlugin extends Plugin {
 		// classes on <body> at runtime — classes the exported site otherwise
 		// has no way to know about, since they live in that plugin's own
 		// data.json rather than in the theme CSS itself.
-		const obsidianDir = path.join(vaultPath, ".obsidian");
+		const obsidianDir = path.join(vaultPath, this.app.vault.configDir);
 		const styleSettingsClasses = computeStyleSettingsClasses(
 			obsidianDir,
 			this.settings.selectedTheme ?? "",
@@ -218,10 +223,12 @@ export default class SvelteExporterPlugin extends Plugin {
 			"lib",
 			"links.json",
 		);
-		let linksMap: Record<string, string[]> = {};
+		let linksMap: LinksMap = {};
 		if (fs.existsSync(linksJsonPath)) {
 			try {
-				linksMap = JSON.parse(fs.readFileSync(linksJsonPath, "utf-8"));
+				linksMap = JSON.parse(
+					fs.readFileSync(linksJsonPath, "utf-8"),
+				) as LinksMap;
 			} catch {
 				linksMap = {};
 			}
@@ -237,7 +244,9 @@ export default class SvelteExporterPlugin extends Plugin {
 		let cache: ExportCache = {};
 		if (fs.existsSync(cacheFile)) {
 			try {
-				cache = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
+				cache = JSON.parse(
+					fs.readFileSync(cacheFile, "utf-8"),
+				) as ExportCache;
 			} catch {
 				cache = {};
 			}
@@ -276,11 +285,12 @@ export default class SvelteExporterPlugin extends Plugin {
 				// scaffold.ts wipes static/ on every export (clean slate), so
 				// these files must always be re-copied — the mtime cache can
 				// only be trusted to skip the (expensive) markdown transform.
+				const cachedMtime = cache[file.path];
 				if (
 					!isStaticPassthrough &&
 					hasLinkData &&
-					cache[file.path] !== undefined &&
-					cache[file.path] >= mtime
+					cachedMtime !== undefined &&
+					cachedMtime >= mtime
 				) {
 					skipped++;
 					continue;
@@ -331,8 +341,7 @@ export default class SvelteExporterPlugin extends Plugin {
 
 		if (this.settings.openAfterExport) {
 			try {
-				const { shell } = require("electron");
-				shell.openPath(destinationPath);
+				openInFileExplorer(destinationPath);
 			} catch (e) {
 				console.error(
 					"[SvelteExporter] Could not open destination folder:",
@@ -572,11 +581,10 @@ export default class SvelteExporterPlugin extends Plugin {
 	// ── Persistence ────────────────────────────────────────────────────────
 
 	async loadSettings() {
-		this.settings = Object.assign(
-			{},
-			DEFAULT_SETTINGS,
-			await this.loadData(),
-		);
+		const saved = (await this.loadData()) as
+			| Partial<SvelteExporterSettings>
+			| null;
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
 	}
 	async saveSettings() {
 		await this.saveData(this.settings);

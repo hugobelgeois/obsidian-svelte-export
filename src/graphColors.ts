@@ -8,6 +8,10 @@ interface ColorGroup {
 	color: { rgb: number; a?: number };
 }
 
+interface GraphJson {
+	colorGroups?: ColorGroup[];
+}
+
 /**
  * Splits a graph color group query into terms, treating a `"quoted phrase"`
  * — with or without an immediately preceding `key:` and no space before the
@@ -59,11 +63,11 @@ function matchesQuery(query: string, file: TFile, app: App): boolean {
 				const inlineTags = (cache?.tags ?? []).map((t) =>
 					t.tag.toLowerCase(),
 				);
-				const fmTags = cache?.frontmatter?.tags;
+				const fmTags: unknown = cache?.frontmatter?.tags;
 				const frontmatterTags: string[] = (
 					Array.isArray(fmTags) ? fmTags : fmTags ? [fmTags] : []
 				).map(
-					(t: string) => `#${String(t).toLowerCase().replace(/^#/, "")}`,
+					(t: unknown) => `#${String(t).toLowerCase().replace(/^#/, "")}`,
 				);
 				const wanted = `#${value.replace(/^#/, "")}`;
 				matched =
@@ -103,10 +107,12 @@ export function computeNodeColors(
 
 	let colorGroups: ColorGroup[];
 	try {
-		const parsed = JSON.parse(fs.readFileSync(graphJsonPath, "utf-8"));
+		const parsed = JSON.parse(
+			fs.readFileSync(graphJsonPath, "utf-8"),
+		) as GraphJson;
 		colorGroups = Array.isArray(parsed.colorGroups) ? parsed.colorGroups : [];
 	} catch {
-		console.warn("[SvelteExporter] Could not parse .obsidian/graph.json");
+		console.warn("[SvelteExporter] Could not parse the vault's graph.json");
 		return {};
 	}
 	if (!colorGroups.length) return {};

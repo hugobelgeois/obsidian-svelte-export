@@ -96,12 +96,12 @@ function parseFrontMatter(markdown: string): {
 	const meta: Record<string, string> = {};
 	const m = markdown.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
 	if (m) {
-		m[1].split("\n").forEach((line) => {
+		(m[1] ?? "").split("\n").forEach((line) => {
 			const idx = line.indexOf(":");
 			if (idx !== -1)
 				meta[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
 		});
-		return { meta, body: m[2] };
+		return { meta, body: m[2] ?? "" };
 	}
 	return { meta, body: markdown };
 }
@@ -131,7 +131,7 @@ function processWikilinks(
 	body = body.replace(
 		/!\[\[([^\]|]+?)(?:\|([^\]]*))?\]\]/g,
 		(_, target: string, alias: string | undefined) => {
-			const filename = target.split("#")[0].trim();
+			const filename = (target.split("#")[0] ?? "").trim();
 			const ext = filename.split(".").pop()?.toLowerCase() ?? "";
 
 			if (IMAGE_EXTENSIONS.has(ext)) {
@@ -179,7 +179,7 @@ function processWikilinks(
 		/\[\[([^\]|]+?)(?:\|([^\]]*))?\]\]/g,
 		(_, target: string, alias: string | undefined) => {
 			const resolved = resolveWikilink(target, wikilinkMap);
-			const noteName = target.split("#")[0].trim();
+			const noteName = (target.split("#")[0] ?? "").trim();
 			const label = (alias ?? noteName).trim();
 			if (!resolved)
 				return `<span class="wiki-unresolved">${label}</span>`;
@@ -235,14 +235,16 @@ function parseIntoSections(body: string): Section[] {
 	for (const line of lines) {
 		const hMatch = line.match(/^(#{1,6})\s+(.*)/);
 		if (hMatch) {
-			const level = hMatch[1].length;
-			const titleRaw = hMatch[2].trim();
+			const level = (hMatch[1] ?? "").length;
+			const titleRaw = (hMatch[2] ?? "").trim();
 			const titleText = stripHtml(titleRaw); // strip wikilink HTML for id/snippetName
 			const title = titleRaw; // keep HTML for display in <hN>
 			const id = slugify(titleText);
 			const snippetName = makeSnippetName(titleText);
 
-			while (stack.length > 0 && stack[stack.length - 1].level >= level) {
+			while (true) {
+				const top = stack[stack.length - 1];
+				if (!top || top.level < level) break;
 				stack.pop();
 			}
 
@@ -254,13 +256,14 @@ function parseIntoSections(body: string): Section[] {
 				lines: [],
 				children: [],
 			};
-			const parent =
-				stack.length > 0 ? stack[stack.length - 1].children : root;
+			const parentTop = stack[stack.length - 1];
+			const parent = parentTop ? parentTop.children : root;
 			parent.push(section);
 			stack.push(section);
 		} else {
-			if (stack.length > 0) {
-				stack[stack.length - 1].lines.push(line);
+			const top = stack[stack.length - 1];
+			if (top) {
+				top.lines.push(line);
 			} else {
 				if (!preamble) {
 					preamble = {
@@ -299,8 +302,8 @@ function splitEmbeds(md: string): string[] {
 	EMBED_RE.lastIndex = 0;
 	while ((m = EMBED_RE.exec(md)) !== null) {
 		parts.push(md.slice(last, m.index));
-		const route = decodeURIComponent(m[1]);
-		const fragment = decodeURIComponent(m[2]);
+		const route = decodeURIComponent(m[1] ?? "");
+		const fragment = decodeURIComponent(m[2] ?? "");
 		parts.push(
 			`<EmbedBlock route={${JSON.stringify(route)}} fragment={${JSON.stringify(fragment)}} />`,
 		);
