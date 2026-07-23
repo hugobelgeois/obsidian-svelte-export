@@ -276,7 +276,14 @@ async function patchAdapterForStaticHosting(
 			`\t\t\t// BASE_PATH is set by .github/workflows/deploy.yml at build time so the\n` +
 			`\t\t\t// site resolves correctly under that subpath without hardcoding the repo\n` +
 			`\t\t\t// name here (empty locally, so \`npm run dev\`/\`preview\` still work at "/").\n` +
-			`\t\t\tpaths: { base: process.env.BASE_PATH ?? "" }`,
+			`\t\t\t// relative: false keeps every generated href/src an absolute\n` +
+			`\t\t\t// "\${base}/…" path instead of SvelteKit's default dot-relative\n` +
+			`\t\t\t// ("../../foo") rewriting. GitHub Pages never redirects a\n` +
+			`\t\t\t// trailing-slash-less request (e.g. the bare repo URL) to add\n` +
+			`\t\t\t// the slash the way a real web server would, so a relative link\n` +
+			`\t\t\t// on that page resolves one directory too high and drops the\n` +
+			`\t\t\t// "/<repo>" prefix entirely — absolute paths sidestep that.\n` +
+			`\t\t\tpaths: { base: process.env.BASE_PATH ?? "", relative: false }`,
 	);
 
 	fs.writeFileSync(viteConfigPath, content, "utf-8");

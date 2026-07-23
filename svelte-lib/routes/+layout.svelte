@@ -6,7 +6,8 @@
 	import { DEFAULT_COLOR_MODE } from "$lib/themeConfig";
 	import type { Snippet } from "svelte";
 	import { onMount, tick } from "svelte";
-	import { afterNavigate } from "$app/navigation";
+	import { afterNavigate, goto } from "$app/navigation";
+	import { base } from "$app/paths";
 	import { page } from "$app/stores";
 	import "../app.css";
 	import "../markdown.css";
@@ -25,6 +26,40 @@
 	// resolve.alias entry; a relative path sidesteps that alias-resolution
 	// step, which otherwise silently returns an empty match (no error).
 	const customScripts = import.meta.glob("../lib/customScripts/*.{js,ts}");
+
+	// Some custom scripts (e.g. the Map Manager plugin's viewer) fetch their
+	// own data files by an absolute, vault-root-relative URL rather than
+	// through SvelteKit's routing, so they can't pick up `base` themselves.
+	// Map Manager's viewer specifically reads this global — see its
+	// customScript.ts (`window.MAP_MANAGER_VIEWER_BASE_URL || "/"`). Without
+	// it, its fetches resolve against the domain root instead of the GitHub
+	// Pages "/<repo>/" subpath (base is "" locally, so this was invisible in
+	// dev) and every map 404s as "Carte introuvable".
+	if (typeof window !== "undefined") {
+		(window as unknown as { MAP_MANAGER_VIEWER_BASE_URL?: string }).MAP_MANAGER_VIEWER_BASE_URL =
+			base || "/";
+	}
+
+	// Map Manager's snapshot JSON also embeds fully-rendered HTML for each
+	// linked note (baked in by the live Obsidian plugin when the map was
+	// last saved), including that note's own <a href="/Jeu/..."> links —
+	// generated from inside Obsidian, which has no idea the export will
+	// live under a GitHub Pages "/<repo>" subpath, so they're always
+	// root-relative and base-less. mountBlock() drops that HTML straight
+	// into the page via innerHTML, so clicking one of those links 404s
+	// (missing the base prefix) even though every link this app generates
+	// itself is correctly prefixed. A delegated click handler is the only
+	// way to catch these, since the HTML arrives well after this layout
+	// mounts, at whatever point the user opens a token's note tab.
+	function fixUnbasedInternalLink(e: MouseEvent) {
+		if (!base || e.defaultPrevented) return;
+		const link = (e.target as HTMLElement).closest?.("a[href]");
+		if (!(link instanceof HTMLAnchorElement)) return;
+		const href = link.getAttribute("href");
+		if (!href || !href.startsWith("/") || href.startsWith(`${base}/`)) return;
+		e.preventDefault();
+		void goto(base + href);
+	}
 
 	// The graph page's own content IS the graph — the right sidebar's mini
 	// preview of the same graph would be redundant, so it's not just
@@ -114,6 +149,8 @@
 			leftCollapsed = true;
 			rightCollapsed = true;
 		}
+
+		document.addEventListener("click", fixUnbasedInternalLink);
 	});
 
 	// onMount alone only fires once, when this root layout first mounts —
