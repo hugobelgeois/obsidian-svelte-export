@@ -1,7 +1,12 @@
 import * as fs from "fs";
 import { TFile, Vault } from "obsidian";
 import * as path from "path";
-import { BASE_PATH_SENTINEL, IMAGE_EXTENSIONS, sanitizeRoutePath } from "./constants";
+import {
+	BASE_PATH_SENTINEL,
+	IMAGE_EXTENSIONS,
+	sanitizeRoutePath,
+	slugify,
+} from "./constants";
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
@@ -78,13 +83,6 @@ function resolveWikilink(
 	const route = map.get(notePart.toLowerCase());
 	if (!route) return null;
 	return { route, fragment };
-}
-
-function slugify(text: string): string {
-	return text
-		.toLowerCase()
-		.replace(/\s+/g, "-")
-		.replace(/[^\w-]/g, "");
 }
 
 // ── Front-matter parser ────────────────────────────────────────────────────

@@ -1,7 +1,11 @@
 import * as fs from "fs";
 import { Notice, Plugin, TAbstractFile, TFile } from "obsidian";
 import * as path from "path";
-import { sanitizeRoutePath, STATIC_PASSTHROUGH_EXTENSIONS } from "./constants";
+import {
+	sanitizeJsonHtmlLinks,
+	sanitizeRoutePath,
+	STATIC_PASSTHROUGH_EXTENSIONS,
+} from "./constants";
 import { openInFileExplorer } from "./electronDialog";
 import { ExportProgressModal } from "./exportModal";
 import { computeNodeColors } from "./graphColors";
@@ -300,7 +304,28 @@ export default class SvelteExporterPlugin extends Plugin {
 					// Copy flat to /static/ — served at root URL by SvelteKit
 					const srcPath = path.join(vaultPath, file.path);
 					const destPath = path.join(staticDir, file.name);
-					fs.copyFileSync(srcPath, destPath);
+					if (file.extension === "json") {
+						// Rewrite href="/..." links embedded in the JSON
+						// (e.g. Map Manager's pre-rendered note HTML) so
+						// their accented paths/fragments match the site's
+						// sanitized routes — falls back to a byte-identical
+						// copy if the file isn't valid JSON.
+						try {
+							const raw = fs.readFileSync(srcPath, "utf-8");
+							const rewritten = sanitizeJsonHtmlLinks(
+								JSON.parse(raw),
+							);
+							fs.writeFileSync(
+								destPath,
+								JSON.stringify(rewritten, null, "\t"),
+								"utf-8",
+							);
+						} catch {
+							fs.copyFileSync(srcPath, destPath);
+						}
+					} else {
+						fs.copyFileSync(srcPath, destPath);
+					}
 				} else {
 					const linkedRoutes = await exportFile(
 						file,

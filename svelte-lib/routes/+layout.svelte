@@ -5,7 +5,8 @@
 	import { STYLE_SETTINGS_CLASSES } from "$lib/styleSettingsClasses";
 	import { DEFAULT_COLOR_MODE } from "$lib/themeConfig";
 	import type { Snippet } from "svelte";
-	import { onMount } from "svelte";
+	import { onMount, tick } from "svelte";
+	import { afterNavigate } from "$app/navigation";
 	import { page } from "$app/stores";
 	import "../app.css";
 	import "../markdown.css";
@@ -113,14 +114,31 @@
 			leftCollapsed = true;
 			rightCollapsed = true;
 		}
+	});
 
-		for (const importScript of Object.values(customScripts)) {
-			importScript()
-				.then((mod: any) => {
-					if (typeof mod?.default === "function") mod.default();
-				})
-				.catch((e) => console.error("[custom script] failed to load", e));
-		}
+	// onMount alone only fires once, when this root layout first mounts —
+	// but SvelteKit keeps the layout mounted across client-side
+	// navigations between pages, so a script meant to process each page's
+	// content (per the "Custom scripts" setting's own description: "runs
+	// once, after the page mounts") would otherwise only ever run on the
+	// very first page loaded, leaving raw/unprocessed content behind on
+	// every page reached via in-app navigation until a hard reload. Using
+	// afterNavigate instead reruns the scripts after every navigation
+	// (it also fires once on initial mount, so onMount doesn't need its
+	// own copy of this loop). `tick()` waits for the new page's DOM to be
+	// committed first, since the scripts query rendered content.
+	afterNavigate(() => {
+		tick().then(() => {
+			for (const importScript of Object.values(customScripts)) {
+				importScript()
+					.then((mod: any) => {
+						if (typeof mod?.default === "function") mod.default();
+					})
+					.catch((e) =>
+						console.error("[custom script] failed to load", e),
+					);
+			}
+		});
 	});
 </script>
 
