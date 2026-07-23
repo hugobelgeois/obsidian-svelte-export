@@ -2,6 +2,7 @@ import * as fs from "fs";
 import { Notice, Plugin, TAbstractFile, TFile } from "obsidian";
 import * as path from "path";
 import { sanitizeRoutePath, STATIC_PASSTHROUGH_EXTENSIONS } from "./constants";
+import { ExportProgressModal } from "./exportModal";
 import { computeNodeColors } from "./graphColors";
 import { exportFile } from "./pageexporter";
 import { computeStyleSettingsClasses, ensureSvelteProject } from "./scaffold";
@@ -58,13 +59,20 @@ export default class SvelteExporterPlugin extends Plugin {
 			this.manifest.dir ?? `.obsidian/plugins/${this.manifest.id}`,
 		);
 
-		const ready = ensureSvelteProject(
+		const progressModal = new ExportProgressModal(this.app, files.length);
+		progressModal.open();
+
+		const ready = await ensureSvelteProject(
 			destinationPath,
 			pluginDir,
 			vaultPath,
 			this.settings.selectedTheme ?? "",
+			(status) => progressModal.setPreparing(status),
 		);
-		if (!ready) return;
+		if (!ready) {
+			progressModal.close();
+			return;
+		}
 
 		this.writeDefaultPage(destinationPath, files);
 		this.writeFavicon(destinationPath, vaultPath);
@@ -247,7 +255,10 @@ export default class SvelteExporterPlugin extends Plugin {
 			skipped = 0,
 			errors = 0;
 
+		let processed = 0;
 		for (const file of files) {
+			processed++;
+			progressModal.update(processed, file.path);
 			try {
 				const mtime = file.stat.mtime;
 				const isStaticPassthrough = STATIC_PASSTHROUGH_EXTENSIONS.has(
@@ -311,7 +322,12 @@ export default class SvelteExporterPlugin extends Plugin {
 		if (exported) parts.push(`✅ ${exported} exported`);
 		if (skipped) parts.push(`⏭ ${skipped} skipped (up-to-date)`);
 		if (errors) parts.push(`❌ ${errors} error(s)`);
-		new Notice(parts.join(" · "));
+		const summary = parts.join(" · ");
+
+		progressModal.finish(summary);
+		setTimeout(() => progressModal.close(), 1200);
+
+		new Notice(summary);
 
 		if (this.settings.openAfterExport) {
 			try {
