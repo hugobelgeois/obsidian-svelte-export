@@ -71,10 +71,24 @@
 
 	let theme: "dark" | "light" = $state(DEFAULT_COLOR_MODE);
 
-	// Collapse state lives here (not inside each sidebar) so a swipe
-	// gesture on the central workspace can open either one.
-	let leftCollapsed = $state(false);
-	let rightCollapsed = $state(false);
+	// Collapse state lives here (not inside each sidebar) so the floating
+	// reveal buttons below (and the mobile "open one, close the other"
+	// behavior in openLeft/openRight) can control either one.
+	//
+	// Defaults to collapsed (not open) on purpose: every page is prerendered
+	// server-side (see `export const prerender = true` in +page.ts), where
+	// there's no `window` to check screen width — the very first HTML a
+	// mobile visitor's browser paints, before any JS has loaded/hydrated,
+	// is whatever this default is. Defaulting to open (the old behavior)
+	// meant every mobile page load started with both 200px-wide sidebars
+	// laid out — desktop's shape, not remotely fitting a phone screen, with
+	// nothing to scroll to reach the squeezed content between them — until
+	// onMount corrected it, however long that took. Collapsed is the safe
+	// default for a screen of unknown size; onMount below now only
+	// *expands* them back open once it can confirm the screen is actually
+	// wide enough for that.
+	let leftCollapsed = $state(true);
+	let rightCollapsed = $state(true);
 
 	function applyTheme(t: "dark" | "light") {
 		document.body.classList.remove("theme-dark", "theme-light");
@@ -102,36 +116,6 @@
 		if (window.innerWidth <= 768) leftCollapsed = true;
 	}
 
-	// ── Swipe to open ────────────────────────────────────────────────────────
-	// Swipe right → open the left sidebar. Swipe left → open the right
-	// sidebar. Mostly-horizontal, decent-length swipes only, so scrolling
-	// the content vertically doesn't accidentally trigger a sidebar.
-	const SWIPE_THRESHOLD = 60;
-	let touchStartX = 0;
-	let touchStartY = 0;
-	let touchTracking = false;
-
-	function handleTouchStart(e: TouchEvent) {
-		// The graph view drags/pans with touch on its own <canvas> (see
-		// Graph.svelte) — don't let that gesture also register as a
-		// sidebar swipe underneath it.
-		touchTracking = !(e.target as HTMLElement).closest("canvas");
-		touchStartX = e.touches[0].clientX;
-		touchStartY = e.touches[0].clientY;
-	}
-
-	function handleTouchEnd(e: TouchEvent) {
-		if (!touchTracking) return;
-		const dx = e.changedTouches[0].clientX - touchStartX;
-		const dy = e.changedTouches[0].clientY - touchStartY;
-		if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dx) < Math.abs(dy)) return;
-		if (dx > 0) {
-			openLeft();
-		} else {
-			openRight();
-		}
-	}
-
 	onMount(() => {
 		document.body.classList.add(
 			"mod-windows",
@@ -145,9 +129,11 @@
 		);
 		applyTheme(theme);
 
-		if (window.innerWidth <= 768) {
-			leftCollapsed = true;
-			rightCollapsed = true;
+		// Both start collapsed (see the $state default above) — open them
+		// back up here if the screen actually has room for them.
+		if (window.innerWidth > 768) {
+			leftCollapsed = false;
+			rightCollapsed = false;
 		}
 
 		document.addEventListener("click", fixUnbasedInternalLink);
@@ -181,11 +167,7 @@
 
 <div class="app-container">
 	<div class="horizontal-main-container">
-		<div
-			class="workspace is-left-sidedock-open is-right-sidedock-open"
-			ontouchstart={handleTouchStart}
-			ontouchend={handleTouchEnd}
-		>
+		<div class="workspace is-left-sidedock-open is-right-sidedock-open">
 			<LeftSidebar
 				collapsed={leftCollapsed}
 				toggleCollapsed={() => (leftCollapsed = !leftCollapsed)}

@@ -15,9 +15,29 @@
 }
 
 .markdown-preview-sizer {
+  /* Without an explicit width, a block box's width:auto is only "fill the
+     parent" in theory — a wide-enough descendant (e.g. a nowrap table
+     column) can still pull this box to that content's max-content width
+     as long as it's under `max-width`, since max-width only clamps a width
+     that's already trying to exceed IT, not one that's merely exceeding
+     the viewport. Confirmed by hand: pinning this to a fixed viewport
+     width made the overflow disappear on mobile. `width: 100%` makes it
+     actually fill the available column instead of sizing to content,
+     while `max-width` still caps it on desktop. */
+  width: 100%;
   max-width: var(--file-line-width, 700px);
   margin: 0 auto;
   padding: var(--size-4-8, 32px) var(--size-4-6, 24px) var(--size-4-16, 64px);
+  min-width: 0;
+}
+
+/* Long unbroken text (URLs, inline code, ...) must wrap instead of forcing
+   this column wider than the viewport — the ancestor flex chain clips
+   overflow rather than scrolling it, so unwrapped text just gets cut off
+   on narrow (mobile) screens instead of being readable. */
+.markdown-rendered {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* Pages that opt into full-width mode (the standalone graph view, or a
@@ -206,13 +226,41 @@
 
 /* ── Tables ──────────────────────────────────────────────── */
 
+/* The actual scroll container — emitted by renderTable() in
+   markdownRenderer.ts wrapping every <table>. A bare <table
+   style="overflow:auto"> only scrolls once its content truly can't shrink
+   any further, which for ordinarily-wrappable text never happens: the
+   browser just wraps/shrinks every column down to fit instead, however
+   cramped that gets. Scrolling this wrapper (with nowrap cells below, so
+   columns keep their natural full-content width) is what makes the table
+   actually overflow and scroll instead of squeezing itself unreadable. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 1em 0;
+  /* CSS-only "scroll shadow": two solid-color gradients (matching the
+     page background) mask a dark radial-gradient edge near each side —
+     `local` ties the mask to the scrolled content so it slides away once
+     that side is scrolled fully into view, while `scroll` keeps the dark
+     edge itself pinned to the viewport. Net effect: a shadow appears on
+     whichever side still has hidden columns, and fades out once you've
+     scrolled all the way there — no JS/scroll-listener needed. */
+  background:
+    linear-gradient(to right, var(--background-primary) 30%, rgba(0, 0, 0, 0)),
+    linear-gradient(to left, var(--background-primary) 30%, rgba(0, 0, 0, 0)) 100% 0,
+    radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0)),
+    radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0)) 100% 0;
+  background-repeat: no-repeat;
+  background-color: var(--background-primary);
+  background-size: 40px 100%, 40px 100%, 14px 100%, 14px 100%;
+  background-attachment: local, local, scroll, scroll;
+}
+
 .markdown-rendered table {
   border-collapse: collapse;
   width: 100%;
-  margin: 1em 0;
+  margin: 0;
   font-size: var(--table-font-size, inherit);
-  overflow: auto;
-  display: block;
 }
 
 .markdown-rendered th,
@@ -223,6 +271,10 @@
   text-align: left;
   vertical-align: top;
   line-height: var(--line-height-normal, 1.6);
+  /* Keep each column at its natural content width instead of wrapping —
+     see .table-scroll's comment above for why that's what makes the
+     scroll (and its shadow) actually work. */
+  white-space: nowrap;
 }
 
 .markdown-rendered th {
@@ -310,12 +362,21 @@
   margin: 0 0 0.25em;
   font-size: 2em;
   font-weight: 700;
+  /* Unlike every other heading, this title lives outside .markdown-rendered
+     (see the headerBlock in pageexporter.ts) so it never inherited that
+     class's overflow-wrap/word-break fix — a long, unbroken note title
+     (e.g. a filename-derived title with no spaces) overflowed past the
+     viewport on mobile despite the fix applied everywhere else. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .md-header .description {
   color: var(--text-muted);
   margin: 0;
   font-size: 0.95em;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* ── Wiki hover-preview / inline-embed content ───────────────
@@ -348,4 +409,34 @@
 .markdown-preview-view::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb-bg, var(--background-modifier-border));
   border-radius: 3px;
+}
+
+/* ── Mobile ───────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  /* Desktop's fixed side padding eats a much bigger share of a phone-width
+     screen — shrink it so note content gets its full width back. */
+  .markdown-preview-sizer {
+    padding: var(--size-4-6, 24px) var(--size-4-4, 16px) var(--size-4-12, 48px);
+  }
+
+  /* Some Obsidian themes (e.g. ITS Theme) set word-break: keep-all directly
+     on h1–h6 for desktop typography — an explicit rule on the element
+     itself always wins over .markdown-rendered's inherited overflow-wrap
+     fix above, no matter the selector specificity. A long, unbreakable
+     heading (a note title, or a heading containing a wikilink) then
+     overflows past the screen edge again. !important is the only way to
+     reliably win against a theme's own app.css here (see
+     .markdown-preview-sizer.full-bleed above for the same pattern). Scoped
+     to mobile only so a theme's intentional desktop heading style is left
+     alone where the extra width makes it a non-issue. */
+  .markdown-rendered h1,
+  .markdown-rendered h2,
+  .markdown-rendered h3,
+  .markdown-rendered h4,
+  .markdown-rendered h5,
+  .markdown-rendered h6 {
+    overflow-wrap: anywhere !important;
+    word-break: break-word !important;
+  }
 }

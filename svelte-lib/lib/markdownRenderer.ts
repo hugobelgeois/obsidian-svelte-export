@@ -148,7 +148,16 @@ export function renderMarkdown(md: string): string {
 		}
 
 		if (paraLines.length) {
-			out.push(`<p>${inline(paraLines.join(" "))}</p>`);
+			// Obsidian's default (non-"Strict line breaks") preview turns
+			// every single newline within a paragraph into a visible <br>,
+			// not just CommonMark's double-space-then-newline hard break —
+			// joining with "\n" (instead of collapsing to a plain space)
+			// and converting what's left after inline() keeps that
+			// behavior. inline()'s own "  \n" → "<br>" rule still fires
+			// first and consumes the newline, so a double-space-ended line
+			// doesn't also pick up this pass's break right behind it.
+			const html = inline(paraLines.join("\n")).replace(/\n/g, "<br>\n");
+			out.push(`<p>${html}</p>`);
 		} else {
 			i++;
 		}
@@ -231,7 +240,13 @@ function renderTable(lines: string[]): string {
 			(r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`,
 		)
 		.join("");
-	return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+	// Wrapped in its own scroll container (see .table-scroll in
+	// markdown.css) — a bare `<table>` with overflow:auto on itself only
+	// scrolls once content can no longer shrink to fit, which for normally
+	// wrappable text never happens; the wrapper + nowrap cells combo is
+	// what makes the table actually keep its natural column widths and
+	// scroll instead of squeezing itself unreadable on a narrow screen.
+	return `<div class="table-scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function escapeHtml(str: string): string {

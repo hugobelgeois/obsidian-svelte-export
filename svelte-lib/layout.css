@@ -15,9 +15,19 @@ a { text-decoration: none; color: inherit; }
 
 /* ── Layout shell ─────────────────────────────────────────── */
 
+/* `vh` on mobile is pinned to the LARGEST possible viewport — as if the
+   browser's address bar and any bottom toolbar/gesture-nav area were
+   already hidden — not the actually-visible one. The scrollable content
+   area below ends up taller than what's really on screen, so its last
+   bit of content sits behind that still-showing browser/OS chrome and is
+   never reachable no matter how far the user scrolls. `dvh` (dynamic
+   viewport height) tracks the real visible viewport instead, live as
+   chrome shows/hides; the `vh` line stays first as a fallback for
+   browsers that don't support `dvh`. */
 .app-container,
 .horizontal-main-container {
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -27,6 +37,7 @@ a { text-decoration: none; color: inherit; }
   display: flex;
   flex-direction: row;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -100,12 +111,14 @@ a { text-decoration: none; color: inherit; }
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-width: 0;
   overflow: hidden;
 }
 
 .view-content,
 .markdown-preview-view {
   flex: 1;
+  min-width: 0; /* a wide child (long word, table) must not grow this flex item past the viewport */
   overflow-y: auto;
   overflow-x: hidden;
 }

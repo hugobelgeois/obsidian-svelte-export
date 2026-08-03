@@ -36,6 +36,101 @@ export default class SvelteExporterPlugin extends Plugin {
 		});
 
 		this.addSettingTab(new SvelteExporterSettingTab(this.app, this));
+
+		// Deferred past initial vault indexing (onLayoutReady) — both events
+		// fire for every existing file while Obsidian first resolves the
+		// vault too, and none of those are actually new/moved.
+		this.app.workspace.onLayoutReady(() => {
+			this.registerEvent(
+				this.app.vault.on("create", (file) => {
+					void this.onFileCreated(file);
+				}),
+			);
+			// Obsidian implements drag-and-drop moves (and folder renames)
+			// as a "rename" event (oldPath → file.path), NOT "create" — by
+			// far the most common way a file actually ends up under a
+			// different folder, so this has to be handled too, not just
+			// brand new files.
+			this.registerEvent(
+				this.app.vault.on("rename", (file, oldPath) => {
+					void this.onFileRenamed(file, oldPath);
+				}),
+			);
+		});
+	}
+
+	private async onFileCreated(file: TAbstractFile): Promise<void> {
+		if (this.applyParentInheritance(file)) await this.saveSettings();
+	}
+
+	private async onFileRenamed(
+		file: TAbstractFile,
+		oldPath: string,
+	): Promise<void> {
+		let changed = this.remapStoredPaths(oldPath, file.path);
+		if (this.applyParentInheritance(file)) changed = true;
+		if (changed) await this.saveSettings();
+	}
+
+	/**
+	 * Rewrites every selectedPaths/hiddenPaths entry that pointed at
+	 * `oldPath` (or was nested under it, for a moved/renamed folder) to
+	 * `newPath`. Without this, a rename or a drag-and-drop move silently
+	 * drops an explicitly exported/hidden file — or an entire folder's
+	 * worth of descendants — out of both lists, since every entry is a
+	 * plain path string keyed to wherever the item used to be.
+	 */
+	private remapStoredPaths(oldPath: string, newPath: string): boolean {
+		let changed = false;
+		const oldPrefix = oldPath + "/";
+		const remap = (paths: string[]): string[] =>
+			paths.map((p) => {
+				if (p === oldPath) {
+					changed = true;
+					return newPath;
+				}
+				if (p.startsWith(oldPrefix)) {
+					changed = true;
+					return newPath + "/" + p.slice(oldPrefix.length);
+				}
+				return p;
+			});
+		this.settings.selectedPaths = remap(this.settings.selectedPaths);
+		this.settings.hiddenPaths = remap(this.settings.hiddenPaths);
+		return changed;
+	}
+
+	/**
+	 * A new (or newly moved-in) file/folder inherits its parent folder's
+	 * export selection and hidden state, mirroring the cascade
+	 * selectAllDescendants/hideAllDescendants apply when the parent itself
+	 * is toggled in settings.ts. Without this, a note dropped into an
+	 * already-exported folder is silently never exported until the user
+	 * re-opens settings and toggles it by hand — selectedPaths/hiddenPaths
+	 * only ever contain paths that existed at the time a folder was
+	 * checked/hidden. Returns whether anything changed, so callers can
+	 * decide when to persist rather than saving twice.
+	 */
+	private applyParentInheritance(file: TAbstractFile): boolean {
+		const parentPath = file.parent?.path;
+		if (parentPath === undefined) return false;
+
+		let changed = false;
+		if (
+			this.settings.selectedPaths.includes(parentPath) &&
+			!this.settings.selectedPaths.includes(file.path)
+		) {
+			this.settings.selectedPaths.push(file.path);
+			changed = true;
+		}
+		if (
+			this.settings.hiddenPaths.includes(parentPath) &&
+			!this.settings.hiddenPaths.includes(file.path)
+		) {
+			this.settings.hiddenPaths.push(file.path);
+			changed = true;
+		}
+		return changed;
 	}
 
 	async runExport() {
@@ -86,6 +181,29 @@ export default class SvelteExporterPlugin extends Plugin {
 		this.writeDefaultPage(destinationPath, files);
 		this.writeFavicon(destinationPath, vaultPath);
 		this.writeCustomScripts(destinationPath, vaultPath);
+
+		// Single source of truth for "which routes should exist right now" —
+		// reused below both to prune stale src/routes/ directories and to
+		// drop stale links.json entries for notes no longer exported.
+		const expectedRoutes = new Set(
+			files
+				.filter((f) => f.extension === "md")
+				.map((f) => "/" + sanitizeRoutePath(f.path)),
+		);
+
+		// A note deleted (or deselected) from the vault would otherwise keep
+		// its previously exported route forever — nothing else ever removes
+		// a src/routes/ leaf directory once written. Prune anything under
+		// routes/ that doesn't correspond to a currently selected markdown
+		// file before the export loop below writes/skips the current set.
+		this.pruneStaleRoutes(
+			destinationPath,
+			new Set(
+				[...expectedRoutes].map((route) =>
+					path.join(destinationPath, "src", "routes", route),
+				),
+			),
+		);
 
 		// ── Write graphConfig.json ───────────────────────────────────────────
 		const graphConfigPath = path.join(
@@ -237,6 +355,15 @@ export default class SvelteExporterPlugin extends Plugin {
 				linksMap = {};
 			}
 		}
+		// Drop link-graph entries for notes no longer part of the export
+		// selection — otherwise a deleted/deselected note's stale entry (and
+		// any dangling reference to it from a note that still links to it)
+		// lingers in the Graph view forever.
+		linksMap = Object.fromEntries(
+			Object.entries(linksMap).filter(([route]) =>
+				expectedRoutes.has(route),
+			),
+		);
 		fs.writeFileSync(
 			linksJsonPath,
 			JSON.stringify(linksMap, null, 2),
@@ -255,6 +382,14 @@ export default class SvelteExporterPlugin extends Plugin {
 				cache = {};
 			}
 		}
+		// Drop cache entries for files no longer part of the export
+		// selection, so a re-selected/re-added file at the same vault path
+		// re-exports fresh rather than immediately being cache-skipped
+		// against a stale mtime.
+		const currentFilePaths = new Set(files.map((f) => f.path));
+		cache = Object.fromEntries(
+			Object.entries(cache).filter(([p]) => currentFilePaths.has(p)),
+		);
 
 		const staticDir = path.join(destinationPath, "static");
 		if (!fs.existsSync(staticDir))
@@ -415,6 +550,56 @@ export default class SvelteExporterPlugin extends Plugin {
 		// hidden path with accents/spaces/special characters never matches
 		// the sanitized route the FileTree actually compares against.
 		return hiddenPaths.map((p) => "/" + sanitizeRoutePath(p));
+	}
+
+	/**
+	 * Removes every src/routes/ leaf directory (one per exported markdown
+	 * file, written by exportFile in pageexporter.ts) that isn't in
+	 * `expectedDirs`, then cleans up any intermediate folder directory left
+	 * empty by that removal. Only recurses into directories that AREN'T
+	 * themselves a page leaf — a leaf dir (identified by containing
+	 * +page.svelte) is a export target in its own right and never nests
+	 * another one.
+	 *
+	 * Doesn't touch routesRoot's own direct +page.svelte/+page.ts (the
+	 * site's root page, written by writeDefaultPage / scaffolded by
+	 * ensureSvelteProject) since those are files, not directories, and this
+	 * only ever iterates directories.
+	 */
+	private pruneStaleRoutes(
+		destinationPath: string,
+		expectedDirs: Set<string>,
+	): void {
+		const routesRoot = path.join(destinationPath, "src", "routes");
+		if (!fs.existsSync(routesRoot)) return;
+
+		const isPageDir = (dir: string) =>
+			fs.existsSync(path.join(dir, "+page.svelte"));
+
+		const walk = (dir: string): void => {
+			let entries: fs.Dirent[];
+			try {
+				entries = fs.readdirSync(dir, { withFileTypes: true });
+			} catch {
+				return;
+			}
+			for (const entry of entries) {
+				if (!entry.isDirectory()) continue;
+				const full = path.join(dir, entry.name);
+				if (isPageDir(full)) {
+					if (!expectedDirs.has(full)) {
+						fs.rmSync(full, { recursive: true, force: true });
+					}
+					continue;
+				}
+				walk(full);
+				if (fs.existsSync(full) && fs.readdirSync(full).length === 0) {
+					fs.rmdirSync(full);
+				}
+			}
+		};
+
+		walk(routesRoot);
 	}
 
 	/**
