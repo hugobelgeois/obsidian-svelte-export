@@ -797,6 +797,10 @@ export default class SvelteExporterPlugin extends Plugin {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
 	}
 	async saveSettings() {
+		// Sorted so data.json diffs stay minimal regardless of the order
+		// paths were toggled in.
+		this.settings.selectedPaths.sort();
+		this.settings.hiddenPaths.sort();
 		await this.saveData(this.settings);
 	}
 }
