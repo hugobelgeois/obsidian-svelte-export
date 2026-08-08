@@ -34,8 +34,26 @@
 
 	// ── Folder open state ──────────────────────────────────────────────────
 
+	// Folders on the path to the current page are open by default, so
+	// navigating always reveals where the active page lives in the tree.
+	// Explicit user toggles (stored below) override that default in either
+	// direction.
+	const ancestorPaths = $derived.by(() => {
+		const parts = currentPath.split("/").filter(Boolean);
+		const ancestors = new Set<string>();
+		let acc = "";
+		for (const part of parts.slice(0, -1)) {
+			acc += "/" + part;
+			ancestors.add(acc);
+		}
+		return ancestors;
+	});
+
 	let openFolders: Record<string, boolean> = $state({});
-	const toggle = (p: string) => { openFolders[p] = !openFolders[p]; };
+	function isOpen(p: string): boolean {
+		return openFolders[p] ?? ancestorPaths.has(p);
+	}
+	const toggle = (p: string) => { openFolders[p] = !isOpen(p); };
 
 	function itemStyle(depth: number): string {
 		return `padding-inline-start: ${(depth - 1) * 17 + 8}px;`;
@@ -58,7 +76,7 @@
 {/snippet}
 
 {#snippet folderNode(node: TreeNode)}
-	<div class="tree-item nav-folder" class:is-collapsed={!openFolders[node.path] && !query}>
+	<div class="tree-item nav-folder" class:is-collapsed={!isOpen(node.path) && !query}>
 		<div
 			class="tree-item-self nav-folder-title is-clickable mod-collapsible"
 			data-path={node.path}
@@ -68,7 +86,7 @@
 			onkeydown={(e) => e.key === "Enter" && toggle(node.path)}
 			style={itemStyle(node.depth)}
 		>
-			<div class="tree-item-icon collapse-icon" class:is-collapsed={!openFolders[node.path] && !query}>
+			<div class="tree-item-icon collapse-icon" class:is-collapsed={!isOpen(node.path) && !query}>
 				<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"
 					fill="none" stroke="currentColor" stroke-width="2"
 					stroke-linecap="round" stroke-linejoin="round" class="svg-icon right-triangle">
@@ -77,7 +95,7 @@
 			</div>
 			<div class="tree-item-inner nav-folder-title-content">{node.name}</div>
 		</div>
-		{#if openFolders[node.path] || query}
+		{#if isOpen(node.path) || query}
 			<div class="tree-item-children nav-folder-children">
 				{#each node.children ?? [] as child}
 					{#if child.children}{@render folderNode(child)}{:else}{@render fileNode(child)}{/if}
