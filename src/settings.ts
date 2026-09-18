@@ -18,7 +18,7 @@ import {
 } from "./constants";
 import { showOpenDialogSync } from "./electronDialog";
 import type SvelteExporterPlugin from "./main";
-import { getVaultBasePath } from "./obsidianUtil";
+import { getVaultBasePath, resolveDestinationPath } from "./obsidianUtil";
 
 export type MarkdownStyle = "obsidian" | "custom" | "none";
 
@@ -116,8 +116,11 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Destination path")
 			.setDesc(
-				"Absolute path to the folder where the SvelteKit project will be written. " +
-					"The vault directory structure will be reproduced under src/routes/.",
+				"Path to the folder where the SvelteKit project will be written. " +
+					"The vault directory structure will be reproduced under src/routes/. " +
+					"Absolute paths (e.g. C:\\exports\\site or /home/user/site) are used as-is. " +
+					"A relative path (e.g. ../aerethios-page) is resolved against the vault's own " +
+					"location instead, so it keeps working if the vault moves between machines or OSes.",
 			)
 			.addText((text) => {
 				destText = text;
@@ -512,7 +515,10 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		this.cachedPaths = new Set();
 		const cacheFile = this.plugin.settings.destinationPath
 			? path.join(
-					this.plugin.settings.destinationPath,
+					resolveDestinationPath(
+						getVaultBasePath(this.app),
+						this.plugin.settings.destinationPath,
+					),
 					".export-cache.json",
 				)
 			: null;

@@ -9,7 +9,7 @@ import {
 import { openInFileExplorer } from "./electronDialog";
 import { ExportProgressModal } from "./exportModal";
 import { computeNodeColors } from "./graphColors";
-import { getVaultBasePath } from "./obsidianUtil";
+import { getVaultBasePath, resolveDestinationPath } from "./obsidianUtil";
 import { exportFile } from "./pageexporter";
 import { computeStyleSettingsClasses, ensureSvelteProject } from "./scaffold";
 import {
@@ -134,9 +134,10 @@ export default class SvelteExporterPlugin extends Plugin {
 	}
 
 	async runExport() {
-		const { destinationPath, selectedPaths } = this.settings;
+		const { destinationPath: rawDestinationPath, selectedPaths } =
+			this.settings;
 
-		if (!destinationPath) {
+		if (!rawDestinationPath) {
 			new Notice(
 				"⚠️ please set a destination path in the plugin settings.",
 			);
@@ -156,6 +157,10 @@ export default class SvelteExporterPlugin extends Plugin {
 		}
 
 		const vaultPath = getVaultBasePath(this.app);
+		const destinationPath = resolveDestinationPath(
+			vaultPath,
+			rawDestinationPath,
+		);
 		const pluginDir = path.join(
 			vaultPath,
 			this.manifest.dir ??
@@ -501,8 +506,13 @@ export default class SvelteExporterPlugin extends Plugin {
 
 		if (this.settings.openAfterExport) {
 			try {
-				openInFileExplorer(destinationPath);
+				await openInFileExplorer(destinationPath);
 			} catch (e) {
+				new Notice(
+					`⚠️ could not open destination folder: ${
+						e instanceof Error ? e.message : String(e)
+					}`,
+				);
 				console.error(
 					"[SvelteExporter] Could not open destination folder:",
 					e,
@@ -783,7 +793,11 @@ export default class SvelteExporterPlugin extends Plugin {
 	async clearCache() {
 		const { destinationPath } = this.settings;
 		if (destinationPath) {
-			const cacheFile = path.join(destinationPath, ".export-cache.json");
+			const vaultPath = getVaultBasePath(this.app);
+			const cacheFile = path.join(
+				resolveDestinationPath(vaultPath, destinationPath),
+				".export-cache.json",
+			);
 			if (fs.existsSync(cacheFile)) fs.unlinkSync(cacheFile);
 		}
 	}

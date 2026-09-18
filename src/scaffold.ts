@@ -13,7 +13,25 @@ import * as path from "path";
  */
 function runCommand(command: string, cwd: string): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(command, { cwd, shell: true, stdio: "pipe" });
+		// On Windows, `shell: true` lets Node resolve `cmd.exe` itself from
+		// `process.env.ComSpec`. Inside Obsidian's Electron process that
+		// lookup can fail (antivirus/EDR interference, a stale ComSpec, …)
+		// even though cmd.exe exists and ComSpec is fine in a normal shell —
+		// so resolve the path ourselves and spawn cmd.exe directly instead
+		// of relying on Node's internal resolution.
+		const child =
+			process.platform === "win32"
+				? spawn(
+						process.env.ComSpec ||
+							path.join(
+								process.env.SystemRoot || process.env.windir || "C:\\Windows",
+								"System32",
+								"cmd.exe",
+							),
+						["/d", "/s", "/c", command],
+						{ cwd, stdio: "pipe", windowsVerbatimArguments: true },
+					)
+				: spawn(command, { cwd, shell: true, stdio: "pipe" });
 		let stderr = "";
 		child.stderr?.on("data", (chunk: Buffer) => {
 			stderr += chunk.toString();

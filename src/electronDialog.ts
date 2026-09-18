@@ -43,8 +43,15 @@ export function showOpenDialogSync(
 	return remote.dialog.showOpenDialogSync(remote.getCurrentWindow(), options);
 }
 
-/** Reveals `path` in the system file explorer. */
-export function openInFileExplorer(path: string): void {
+/**
+ * Reveals `path` in the system file explorer.
+ *
+ * `shell.openPath` never rejects on failure — it resolves with a
+ * human-readable error string instead (empty string on success) — so that
+ * string is turned into a thrown error here for callers to catch normally.
+ */
+export async function openInFileExplorer(path: string): Promise<void> {
 	const { shell } = getElectron();
-	void shell.openPath(path);
+	const error = await shell.openPath(path);
+	if (error) throw new Error(error);
 }
