@@ -30,7 +30,12 @@ export function resolveDestinationPath(
 	vaultPath: string,
 	destinationPath: string,
 ): string {
-	return path.isAbsolute(destinationPath)
-		? destinationPath
-		: path.resolve(vaultPath, destinationPath);
+	if (path.isAbsolute(destinationPath)) return destinationPath;
+	// A relative value is meant to be OS-agnostic (typically a vault synced
+	// between e.g. Windows and Linux/macOS machines), but Windows' settings
+	// UI happily saves backslashes. POSIX's path module doesn't treat "\" as
+	// a separator, so an unnormalized "..\site" saved from Windows would
+	// resolve on Linux/macOS to one bogus path segment literally named
+	// "..\site" instead of being split into its parent/child parts.
+	return path.resolve(vaultPath, destinationPath.replace(/\\/g, "/"));
 }

@@ -85,6 +85,13 @@ export async function ensureSvelteProject(
 			const parentDir = path.dirname(destRoot);
 			const projectName = path.basename(destRoot);
 
+			// A missing parentDir makes the `runCommand` spawn below fail
+			// with a cryptic "spawn /bin/sh ENOENT"/"spawn cmd.exe ENOENT" —
+			// Node attributes a bad `cwd` to the shell executable itself
+			// instead of reporting the real cause — so create it upfront
+			// and fail with a clear message if that's not possible.
+			fs.mkdirSync(parentDir, { recursive: true });
+
 			// --no-dir-check: without it, sv create shows an interactive
 			// "Directory not empty. Continue?" prompt whenever destRoot
 			// already has anything in it (e.g. a .git folder from cloning
