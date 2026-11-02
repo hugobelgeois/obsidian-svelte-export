@@ -9,6 +9,7 @@
 	import { afterNavigate, goto } from "$app/navigation";
 	import { base } from "$app/paths";
 	import { page } from "$app/stores";
+	import "../markdown-fallback.css";
 	import "../app.css";
 	import "../markdown.css";
 	import "../layout.css";

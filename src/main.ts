@@ -9,8 +9,21 @@ import {
 import { openInFileExplorer } from "./electronDialog";
 import { ExportProgressModal } from "./exportModal";
 import { computeNodeColors } from "./graphColors";
+import {
+	captureBodyAppearanceCss,
+	captureObsidianBaseCss,
+	captureStyleSettingsCss,
+} from "./obsidianCss";
 import { getVaultBasePath, resolveDestinationPath } from "./obsidianUtil";
 import { exportFile } from "./pageexporter";
+import {
+	activeIntegrations,
+	buildIntegrationCss,
+	integrationSignature,
+	PLUGIN_INTEGRATIONS,
+	PluginBlockRenderer,
+	PluginIntegration,
+} from "./pluginIntegrations";
 import { computeStyleSettingsClasses, ensureSvelteProject } from "./scaffold";
 import {
 	DEFAULT_SETTINGS,
@@ -20,6 +33,19 @@ import {
 
 export type ExportCache = Record<string, number>;
 type LinksMap = Record<string, string[]>;
+
+/**
+ * .export-plugins.json — what the mtime cache alone can't tell: which
+ * pages contain plugin blocks (to re-export them when that plugin's
+ * settings change), which local files those blocks reference (static/ is
+ * wiped every export, so they're re-copied even for cache-skipped pages),
+ * and the runtime CSS captured while rendering them.
+ */
+interface PluginExportState {
+	signatures: Record<string, string>;
+	pages: Record<string, { plugins: string[]; assets: string[] }>;
+	runtimeCss: Record<string, Record<string, string>>;
+}
 
 export default class SvelteExporterPlugin extends Plugin {
 	settings: SvelteExporterSettings;
@@ -170,12 +196,21 @@ export default class SvelteExporterPlugin extends Plugin {
 		const progressModal = new ExportProgressModal(this.app, files.length);
 		progressModal.open();
 
+		// Obsidian's own base CSS + appearance settings, read from this very
+		// window — what makes an exported theme look like it does in Obsidian.
+		const obsidianCss = {
+			base: await captureObsidianBaseCss(),
+			appearance: captureBodyAppearanceCss(),
+			styleSettings: captureStyleSettingsCss(),
+		};
+
 		const ready = await ensureSvelteProject(
 			destinationPath,
 			pluginDir,
 			vaultPath,
 			this.app.vault.configDir,
 			this.settings.selectedTheme ?? "",
+			obsidianCss,
 			(status) => progressModal.setPreparing(status),
 		);
 		if (!ready) {
@@ -259,6 +294,10 @@ export default class SvelteExporterPlugin extends Plugin {
 			obsidianDir,
 			this.settings.selectedTheme ?? "",
 		);
+		// Style Settings' variable-* values are gated behind this class.
+		if (obsidianCss.styleSettings) {
+			styleSettingsClasses.push("css-settings-manager");
+		}
 		const styleSettingsClassesPath = path.join(
 			destinationPath,
 			"src",
@@ -396,6 +435,41 @@ export default class SvelteExporterPlugin extends Plugin {
 			Object.entries(cache).filter(([p]) => currentFilePaths.has(p)),
 		);
 
+		// ── Plugin integrations ──────────────────────────────────────────
+		const pluginStatePath = path.join(
+			destinationPath,
+			".export-plugins.json",
+		);
+		const pluginState = this.loadPluginState(pluginStatePath);
+		pluginState.pages = Object.fromEntries(
+			Object.entries(pluginState.pages).filter(([p]) =>
+				currentFilePaths.has(p),
+			),
+		);
+		const active = activeIntegrations(
+			this.app,
+			this.settings.disabledIntegrations ?? [],
+		);
+		for (const integration of PLUGIN_INTEGRATIONS) {
+			const id = integration.pluginId;
+			const signature = integrationSignature(
+				this.app,
+				vaultPath,
+				integration,
+				active.includes(integration),
+			);
+			if (pluginState.signatures[id] === signature) continue;
+			// Turned on/off, updated or reconfigured: every page with one
+			// of its blocks must be rendered again, and CSS captured from
+			// the previous configuration is stale.
+			for (const [filePath, page] of Object.entries(pluginState.pages)) {
+				if (page.plugins.includes(id)) delete cache[filePath];
+			}
+			delete pluginState.runtimeCss[id];
+			pluginState.signatures[id] = signature;
+		}
+		const pluginRenderer = new PluginBlockRenderer(this.app, active);
+
 		const staticDir = path.join(destinationPath, "static");
 		if (!fs.existsSync(staticDir))
 			fs.mkdirSync(staticDir, { recursive: true });
@@ -422,9 +496,15 @@ export default class SvelteExporterPlugin extends Plugin {
 				// upgrading to this feature) must be re-exported even if the
 				// mtime cache would otherwise skip it, or its links.json
 				// entry would stay permanently missing.
+				// Same for plugin block data (e.g. right after upgrading to
+				// plugin integrations).
 				const hasLinkData =
 					isStaticPassthrough ||
-					Object.prototype.hasOwnProperty.call(linksMap, ownRoute);
+					(Object.prototype.hasOwnProperty.call(linksMap, ownRoute) &&
+						Object.prototype.hasOwnProperty.call(
+							pluginState.pages,
+							file.path,
+						));
 
 				// scaffold.ts wipes static/ on every export (clean slate), so
 				// these files must always be re-copied — the mtime cache can
@@ -467,12 +547,17 @@ export default class SvelteExporterPlugin extends Plugin {
 						fs.copyFileSync(srcPath, destPath);
 					}
 				} else {
-					const linkedRoutes = await exportFile(
+					const result = await exportFile(
 						file,
 						destinationPath,
 						this.app.vault,
+						pluginRenderer,
 					);
-					linksMap[ownRoute] = linkedRoutes;
+					linksMap[ownRoute] = result.linkedRoutes;
+					pluginState.pages[file.path] = {
+						plugins: result.pluginIds,
+						assets: result.pluginAssets,
+					};
 				}
 
 				cache[file.path] = mtime;
@@ -485,6 +570,21 @@ export default class SvelteExporterPlugin extends Plugin {
 				errors++;
 			}
 		}
+
+		pluginRenderer.dispose();
+		for (const [id, chunks] of pluginRenderer.runtimeCss) {
+			pluginState.runtimeCss[id] = {
+				...pluginState.runtimeCss[id],
+				...Object.fromEntries(chunks),
+			};
+		}
+		this.writePluginCss(destinationPath, vaultPath, active, pluginState);
+		this.copyPluginAssets(staticDir, pluginState);
+		fs.writeFileSync(
+			pluginStatePath,
+			JSON.stringify(pluginState, null, 2),
+			"utf-8",
+		);
 
 		fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2), "utf-8");
 		fs.writeFileSync(
@@ -785,6 +885,76 @@ export default class SvelteExporterPlugin extends Plugin {
 			// the "*.{js,ts}" pattern in +layout.svelte.
 			const flatName = scriptPath.replace(/\//g, "__").replace(/^\.+/, "");
 			fs.copyFileSync(srcPath, path.join(scriptsDir, flatName));
+		}
+	}
+
+	// ── Plugin integrations ────────────────────────────────────────────────
+
+	private loadPluginState(statePath: string): PluginExportState {
+		const empty: PluginExportState = {
+			signatures: {},
+			pages: {},
+			runtimeCss: {},
+		};
+		if (!fs.existsSync(statePath)) return empty;
+		try {
+			return {
+				...empty,
+				...(JSON.parse(
+					fs.readFileSync(statePath, "utf-8"),
+				) as Partial<PluginExportState>),
+			};
+		} catch {
+			return empty;
+		}
+	}
+
+	/**
+	 * Writes src/lib/pluginCss/<pluginId>.css for every active integration —
+	 * imported by the pages that render one of its blocks (see
+	 * markdownToSvelte in pageexporter.ts). Wiped first, so a disabled
+	 * integration's stylesheet doesn't linger; its pages were re-exported
+	 * without the import, since disabling it changed its signature.
+	 */
+	private writePluginCss(
+		destinationPath: string,
+		vaultPath: string,
+		active: PluginIntegration[],
+		pluginState: PluginExportState,
+	) {
+		const cssDir = path.join(destinationPath, "src", "lib", "pluginCss");
+		if (fs.existsSync(cssDir)) {
+			fs.rmSync(cssDir, { recursive: true, force: true });
+		}
+		if (!active.length) return;
+		fs.mkdirSync(cssDir, { recursive: true });
+		for (const integration of active) {
+			const css = buildIntegrationCss(
+				this.app,
+				vaultPath,
+				integration,
+				Object.values(pluginState.runtimeCss[integration.pluginId] ?? {}),
+			);
+			fs.writeFileSync(
+				path.join(cssDir, `${integration.pluginId}.css`),
+				css,
+				"utf-8",
+			);
+		}
+	}
+
+	/** Local files referenced by rendered plugin blocks, copied flat into
+	 * static/ (where their rewritten URLs point — see rewriteLocalUrls). */
+	private copyPluginAssets(staticDir: string, pluginState: PluginExportState) {
+		const assets = new Set(
+			Object.values(pluginState.pages).flatMap((p) => p.assets),
+		);
+		for (const asset of assets) {
+			try {
+				fs.copyFileSync(asset, path.join(staticDir, path.basename(asset)));
+			} catch (e) {
+				console.warn(`[SvelteExporter] Could not copy ${asset}:`, e);
+			}
 		}
 	}
 

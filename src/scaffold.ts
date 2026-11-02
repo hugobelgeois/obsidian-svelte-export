@@ -5,6 +5,16 @@ import * as path from "path";
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
+/** CSS captured from the running Obsidian instance — see obsidianCss.ts. */
+export interface ObsidianCss {
+	/** Obsidian's built-in app.css — the base every theme builds on. */
+	base: string;
+	/** Appearance settings Obsidian applies inline on <body>. */
+	appearance: string;
+	/** Style Settings plugin's injected variables. */
+	styleSettings: string;
+}
+
 /**
  * Runs a shell command without blocking Obsidian's renderer thread — unlike
  * `execSync`, which freezes the entire app (not just this plugin) for as
@@ -66,6 +76,7 @@ export async function ensureSvelteProject(
 	vaultPath: string,
 	configDir: string,
 	selectedTheme = "",
+	obsidianCss?: ObsidianCss,
 	onStatus?: (message: string) => void,
 ): Promise<boolean> {
 	// The `--template minimal` scaffold from `sv create` doesn't emit a
@@ -144,7 +155,16 @@ export async function ensureSvelteProject(
 		}
 	}
 
-	copyPluginFiles(destRoot, pluginDir, vaultPath, configDir, selectedTheme);
+	copyPluginFiles(
+		destRoot,
+		pluginDir,
+		vaultPath,
+		configDir,
+		selectedTheme,
+		obsidianCss,
+	);
+
+	await trackFilenameCaseInGit(destRoot);
 
 	// Runs on every export (not just first scaffold) so a project exported
 	// before this existed — like one already pushed to GitHub with a
@@ -152,6 +172,22 @@ export async function ensureSvelteProject(
 	await ensureGitHubPagesDeployment(destRoot, onStatus);
 
 	return true;
+}
+
+/**
+ * Git on Windows/macOS defaults to core.ignorecase=true, so renaming
+ * "Arek.png" to "arek.png" is invisible to it: the repo keeps the old name,
+ * and GitHub Pages (case-sensitive) 404s every link to the new one. Turning
+ * it off makes such a rename show up as a normal change to commit.
+ * No-op if destRoot isn't a git repo or git isn't installed.
+ */
+async function trackFilenameCaseInGit(destRoot: string): Promise<void> {
+	if (!fs.existsSync(path.join(destRoot, ".git"))) return;
+	try {
+		await runCommand("git config core.ignorecase false", destRoot);
+	} catch (e) {
+		console.warn("[SvelteExporter] Could not set core.ignorecase:", e);
+	}
 }
 
 /**
@@ -223,8 +259,8 @@ async function ensureGitHubPagesDeployment(
  * Swaps the adapter-auto import/usage in vite.config.ts for adapter-static,
  * installing the package first if it isn't already a dependency. Also adds
  * `paths.base` driven by a BASE_PATH env var (set by the deploy workflow to
- * "/<repo name>") so the site resolves correctly under a GitHub project
- * page's URL subpath, and a `fallback: '404.html'` page.
+ * whatever subpath GitHub Pages serves the site from — "/<repo>" or "" for a
+ * custom domain), and a `fallback: '404.html'` page.
  *
  * No-ops once already patched (checks for "adapter-static" in the file), so
  * this is cheap and safe to call on every export.
@@ -297,10 +333,10 @@ async function patchAdapterForStaticHosting(
 	content = content.replace(
 		marker,
 		`adapter: adapter({ fallback: '404.html' }),\n\n` +
-			`\t\t\t// GitHub project pages are served from https://<user>.github.io/<repo>/ —\n` +
-			`\t\t\t// BASE_PATH is set by .github/workflows/deploy.yml at build time so the\n` +
-			`\t\t\t// site resolves correctly under that subpath without hardcoding the repo\n` +
-			`\t\t\t// name here (empty locally, so \`npm run dev\`/\`preview\` still work at "/").\n` +
+			`\t\t\t// BASE_PATH is set by .github/workflows/deploy.yml at build time to\n` +
+			`\t\t\t// the subpath GitHub Pages actually serves the site from ("/<repo>"\n` +
+			`\t\t\t// on <user>.github.io, "" on a custom domain) — empty locally, so\n` +
+			`\t\t\t// \`npm run dev\`/\`preview\` still work at "/".\n` +
 			`\t\t\t// relative: false keeps every generated href/src an absolute\n` +
 			`\t\t\t// "\${base}/…" path instead of SvelteKit's default dot-relative\n` +
 			`\t\t\t// ("../../foo") rewriting. GitHub Pages never redirects a\n` +
@@ -335,31 +371,35 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Compute base path for a GitHub project page
-        run: echo "BASE_PATH=/\${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
+      # Asks GitHub where Pages actually serves this site: "/<repo>" for a
+      # project page on <user>.github.io, "" for a custom domain or a
+      # <user>.github.io repo — so the build follows the site's real URL.
+      - id: pages
+        uses: actions/configure-pages@v6
       - run: npm run build
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+        env:
+          BASE_PATH: \${{ steps.pages.outputs.base_path }}
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: "build"
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: github-pages
       url: \${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 `;
 
 /**
@@ -390,6 +430,7 @@ function copyPluginFiles(
 	vaultPath: string,
 	configDir: string,
 	selectedTheme = "",
+	obsidianCss?: ObsidianCss,
 ): void {
 	const libDir = path.join(pluginDir, "svelte-lib");
 
@@ -413,7 +454,23 @@ function copyPluginFiles(
 
 	// Build app.css from Obsidian theme + snippets
 	const obsidianDir = path.join(vaultPath, configDir);
-	buildAppCss(obsidianDir, path.join(destSrc, "app.css"), selectedTheme);
+	buildAppCss(
+		obsidianDir,
+		path.join(destSrc, "app.css"),
+		selectedTheme,
+		obsidianCss,
+	);
+
+	// markdown-fallback.css is the plugin's own approximation of Obsidian's
+	// reading view, only meant for when Obsidian's real app.css couldn't be
+	// captured — otherwise its rules would override the theme's.
+	if (obsidianCss?.base) {
+		fs.writeFileSync(
+			path.join(destSrc, "markdown-fallback.css"),
+			"/* Obsidian's own app.css is bundled in app.css — fallback not needed. */\n",
+			"utf-8",
+		);
+	}
 }
 
 /**
@@ -455,9 +512,11 @@ function resolveActiveThemeAndSnippets(
 }
 
 /**
- * Replace destRoot/src/app.css with the content of the active Obsidian theme
- * (if any) merged with all enabled snippets. If no theme is set, only
- * snippets are appended to the existing app.css.
+ * Replace destRoot/src/app.css with the same cascade Obsidian itself runs
+ * with: its built-in app.css, then the active theme (if any), then enabled
+ * snippets, then Style Settings' variables and the appearance settings
+ * (accent, fonts, font size). If Obsidian's app.css couldn't be captured,
+ * the plugin's own app.css stands in for it.
  *
  * Layout shell / reset / icon-sizing rules are NOT duplicated here — they
  * live once in src/layout.css (shipped unconditionally by copyPluginFiles
@@ -468,6 +527,7 @@ function buildAppCss(
 	obsidianDir: string,
 	appCssPath: string,
 	selectedTheme = "",
+	obsidianCss?: ObsidianCss,
 ): void {
 	const { cssTheme, enabledSnippets } = resolveActiveThemeAndSnippets(
 		obsidianDir,
@@ -476,8 +536,16 @@ function buildAppCss(
 
 	const chunks: string[] = [];
 
+	if (obsidianCss?.base) {
+		chunks.push("/* obsidian: app.css */");
+		chunks.push(obsidianCss.base);
+	} else if (!cssTheme && fs.existsSync(appCssPath)) {
+		// Obsidian's own base unavailable and no theme — keep the plugin's
+		// approximation (its body.theme-* rules would outrank a theme's)
+		chunks.push(fs.readFileSync(appCssPath, "utf-8"));
+	}
+
 	if (cssTheme) {
-		// Theme CSS replaces app.css as the base
 		const themeDir = path.join(obsidianDir, "themes", cssTheme);
 		if (fs.existsSync(themeDir)) {
 			for (const entry of fs.readdirSync(themeDir, {
@@ -489,11 +557,6 @@ function buildAppCss(
 					fs.readFileSync(path.join(themeDir, entry.name), "utf-8"),
 				);
 			}
-		}
-	} else {
-		// No theme — keep the plugin's own app.css
-		if (fs.existsSync(appCssPath)) {
-			chunks.push(fs.readFileSync(appCssPath, "utf-8"));
 		}
 	}
 
@@ -516,6 +579,15 @@ function buildAppCss(
 			chunks.push(`/* snippet: ${name}.css */`);
 			chunks.push(fs.readFileSync(filePath, "utf-8"));
 		}
+	}
+
+	if (obsidianCss?.styleSettings) {
+		chunks.push("/* obsidian: Style Settings variables */");
+		chunks.push(obsidianCss.styleSettings);
+	}
+	if (obsidianCss?.appearance) {
+		chunks.push("/* obsidian: appearance settings */");
+		chunks.push(obsidianCss.appearance);
 	}
 
 	if (chunks.length > 0) {
@@ -724,6 +796,11 @@ function copyRecursive(src: string, dest: string): void {
 		if (entry.isDirectory()) {
 			copyRecursive(srcPath, destPath);
 		} else {
+			// On a case-insensitive filesystem (Windows, macOS) copying over
+			// an existing file keeps the OLD name's casing — so a renamed
+			// "Embedblock" → "EmbedBlock" would never reach the export.
+			// Removing it first makes the copy take the source's casing.
+			removeIfExists(destPath);
 			fs.copyFileSync(srcPath, destPath);
 		}
 	}

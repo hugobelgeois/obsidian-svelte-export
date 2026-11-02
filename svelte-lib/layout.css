@@ -115,6 +115,25 @@ a { text-decoration: none; color: inherit; }
   overflow: hidden;
 }
 
+/* Obsidian's own app.css (bundled into app.css at export) sizes split
+   children for its JS-driven layout: `.mod-vertical > *` gets width:0 (the
+   real width is set inline by Obsidian's JS — never here, so the content
+   column collapsed to its padding) and `.mod-horizontal > *` gets an equal
+   flex share with height:0 (the sidebar header took half the sidebar).
+   Undo both — flex alone sizes these here. */
+.workspace-split.mod-root > *,
+.workspace-split.mod-sidedock > * {
+  width: auto;
+  height: auto;
+}
+
+.workspace-split.mod-sidedock > .nav-header { flex: none; }
+
+/* Obsidian sets `contain: strict !important` on leaves — which also makes
+   them the containing block of every position:fixed descendant (link
+   previews, graph modal), mispositioning and clipping those. */
+.workspace .workspace-leaf { contain: none !important; }
+
 .view-content,
 .markdown-preview-view {
   flex: 1;

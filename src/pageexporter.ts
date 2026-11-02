@@ -7,22 +7,43 @@ import {
 	sanitizeRoutePath,
 	slugify,
 } from "./constants";
+import { PLUGIN_INTEGRATIONS, PluginBlockRenderer } from "./pluginIntegrations";
 
 // ── Public API ─────────────────────────────────────────────────────────────
+
+export interface ExportResult {
+	linkedRoutes: string[];
+	/** Every integration (PLUGIN_INTEGRATIONS) with a code block in this
+	 * note — active or not, so a later change to that integration knows
+	 * which pages to re-export. */
+	pluginIds: string[];
+	/** Absolute paths of local files rendered plugin blocks reference. */
+	pluginAssets: string[];
+}
 
 export async function exportFile(
 	file: TFile,
 	destRoot: string,
 	vault: Vault,
-): Promise<string[]> {
+	pluginRenderer: PluginBlockRenderer,
+): Promise<ExportResult> {
 	const markdown = await vault.read(file);
 	const wikilinkMap = buildWikilinkMap(vault);
 	const imageBasenameMap = buildImageBasenameMap(vault);
+	const { meta, body } = parseFrontMatter(markdown);
+	const plugins = await renderPluginBlocks(
+		body,
+		file.path,
+		pluginRenderer,
+		wikilinkMap,
+	);
 	const { pageSvelte, pageTs, linkedRoutes } = markdownToSvelte(
-		markdown,
+		meta,
+		plugins.body,
 		file.basename,
 		wikilinkMap,
 		imageBasenameMap,
+		plugins,
 	);
 
 	// Sanitize path segments — apostrophes and other special chars break
@@ -38,7 +59,111 @@ export async function exportFile(
 	fs.writeFileSync(path.join(outputDir, "+page.svelte"), pageSvelte, "utf-8");
 	fs.writeFileSync(path.join(outputDir, "+page.ts"), pageTs, "utf-8");
 
-	return linkedRoutes;
+	return {
+		linkedRoutes,
+		pluginIds: [...plugins.seenPluginIds],
+		pluginAssets: [...plugins.assets],
+	};
+}
+
+// ── Plugin code blocks ─────────────────────────────────────────────────────
+
+interface PluginBlocks {
+	/** Markdown with each rendered block swapped for a placeholder line. */
+	body: string;
+	/** Rendered HTML, indexed by the placeholder's data-index. */
+	html: string[];
+	/** Integrations actually rendered — their CSS gets imported. */
+	renderedPluginIds: Set<string>;
+	seenPluginIds: Set<string>;
+	assets: Set<string>;
+}
+
+const KNOWN_PLUGIN_LANGUAGES = new Map(
+	PLUGIN_INTEGRATIONS.flatMap((i) =>
+		i.codeBlockLanguages.map((lang) => [lang, i.pluginId] as const),
+	),
+);
+
+/**
+ * Renders every fenced code block belonging to an active plugin
+ * integration through the plugin itself (see PluginBlockRenderer), before
+ * wikilinks are processed — the block's source (YAML for a statblock) has
+ * to reach the plugin untouched.
+ */
+async function renderPluginBlocks(
+	body: string,
+	sourcePath: string,
+	renderer: PluginBlockRenderer,
+	wikilinkMap: Map<string, string>,
+): Promise<PluginBlocks> {
+	const result: PluginBlocks = {
+		body,
+		html: [],
+		renderedPluginIds: new Set(),
+		seenPluginIds: new Set(),
+		assets: new Set(),
+	};
+	const resolveLink = (target: string) => {
+		const resolved = resolveWikilink(target, wikilinkMap);
+		if (!resolved) return null;
+		const { route, fragment } = resolved;
+		const href = fragment ? `${route}#${slugify(fragment)}` : route;
+		return BASE_PATH_SENTINEL + href;
+	};
+
+	const lines = body.split("\n");
+	const out: string[] = [];
+	let i = 0;
+	while (i < lines.length) {
+		const open = (lines[i] ?? "").match(/^\s*(`{3,}|~{3,})\s*([\w-]+)?/);
+		if (!open) {
+			out.push(lines[i] ?? "");
+			i++;
+			continue;
+		}
+		const fence = open[1] ?? "```";
+		const lang = open[2] ?? "";
+		const closeRe = new RegExp(`^\\s*${fence[0]}{${fence.length},}\\s*$`);
+		let end = i + 1;
+		while (end < lines.length && !closeRe.test(lines[end] ?? "")) end++;
+
+		const knownId = KNOWN_PLUGIN_LANGUAGES.get(lang);
+		if (knownId) result.seenPluginIds.add(knownId);
+		const integration = renderer.integrationFor(lang);
+		if (integration) {
+			try {
+				const rendered = await renderer.render(
+					integration,
+					lang,
+					lines.slice(i + 1, end).join("\n"),
+					sourcePath,
+					resolveLink,
+				);
+				out.push(
+					"",
+					`<div class="plugin-block-placeholder" data-index="${result.html.length}"></div>`,
+					"",
+				);
+				result.html.push(rendered.html);
+				result.renderedPluginIds.add(integration.pluginId);
+				rendered.assets.forEach((a) => result.assets.add(a));
+				i = end + 1;
+				continue;
+			} catch (e) {
+				console.error(
+					`[SvelteExporter] ${integration.pluginId} failed to render a block in ${sourcePath}:`,
+					e,
+				);
+			}
+		}
+		// Not a plugin block (or rendering failed): keep it verbatim, and
+		// skip past its body so nothing inside is mistaken for a fence.
+		out.push(...lines.slice(i, end + 1));
+		i = end + 1;
+	}
+	result.body = out.join("\n");
+	return result;
 }
 
 // ── Wikilink helpers ───────────────────────────────────────────────────────
@@ -285,26 +410,34 @@ function parseIntoSections(body: string): Section[] {
 
 // ── Snippet generator ──────────────────────────────────────────────────────
 
-// Regex to find embed placeholders emitted by processWikilinks
+// Regex to find embed placeholders emitted by processWikilinks, and plugin
+// block placeholders emitted by renderPluginBlocks
 const EMBED_RE =
-	/<div class="wiki-embed" data-route="([^"]*)" data-fragment="([^"]*)"><\/div>/g;
+	/<div class="wiki-embed" data-route="([^"]*)" data-fragment="([^"]*)"><\/div>|<div class="plugin-block-placeholder" data-index="(\d+)"><\/div>/g;
 
 /**
  * Split markdown on embed placeholders, returning alternating chunks of
  * [markdown, EmbedBlock jsx, markdown, EmbedBlock jsx, ...]
  */
-function splitEmbeds(md: string): string[] {
+function splitEmbeds(md: string, pluginHtml: string[]): string[] {
 	const parts: string[] = [];
 	let last = 0;
 	let m: RegExpExecArray | null;
 	EMBED_RE.lastIndex = 0;
 	while ((m = EMBED_RE.exec(md)) !== null) {
 		parts.push(md.slice(last, m.index));
-		const route = decodeURIComponent(m[1] ?? "");
-		const fragment = decodeURIComponent(m[2] ?? "");
-		parts.push(
-			`<EmbedBlock route={${JSON.stringify(route)}} fragment={${JSON.stringify(fragment)}} />`,
-		);
+		if (m[3] !== undefined) {
+			const html = pluginHtml[Number(m[3])] ?? "";
+			parts.push(
+				`<div class="plugin-block">{@html applyBase(${JSON.stringify(html)})}</div>`,
+			);
+		} else {
+			const route = decodeURIComponent(m[1] ?? "");
+			const fragment = decodeURIComponent(m[2] ?? "");
+			parts.push(
+				`<EmbedBlock route={${JSON.stringify(route)}} fragment={${JSON.stringify(fragment)}} />`,
+			);
+		}
 		last = m.index + m[0].length;
 	}
 	parts.push(md.slice(last));
@@ -312,8 +445,8 @@ function splitEmbeds(md: string): string[] {
 }
 
 /** Emit Svelte markup for markdown that may contain embed placeholders. */
-function emitMarkdown(md: string): string {
-	return splitEmbeds(md)
+function emitMarkdown(md: string, pluginHtml: string[]): string {
+	return splitEmbeds(md, pluginHtml)
 		.map((part, i) => {
 			if (i % 2 === 1) return `\t${part}`; // EmbedBlock component
 			if (!part.trim()) return "";
@@ -327,7 +460,7 @@ function emitMarkdown(md: string): string {
  * Recursively emit Svelte snippets for a section tree.
  * Each snippet renders its own markdown body + calls child snippets.
  */
-function emitSnippets(sections: Section[]): string[] {
+function emitSnippets(sections: Section[], pluginHtml: string[]): string[] {
 	const out: string[] = [];
 
 	for (const sec of sections) {
@@ -335,7 +468,7 @@ function emitSnippets(sections: Section[]): string[] {
 			.map((c) => `\t{@render ${c.snippetName}()}`)
 			.join("\n");
 
-		const mdBody = emitMarkdown(sec.lines.join("\n"));
+		const mdBody = emitMarkdown(sec.lines.join("\n"), pluginHtml);
 
 		let body = "";
 		if (sec.level === 0) {
@@ -352,7 +485,7 @@ function emitSnippets(sections: Section[]): string[] {
 		}
 
 		out.push(`{#snippet ${sec.snippetName}()}\n${body}\n{/snippet}`);
-		out.push(...emitSnippets(sec.children));
+		out.push(...emitSnippets(sec.children, pluginHtml));
 	}
 
 	return out;
@@ -368,12 +501,13 @@ function stripHtml(html: string): string {
 // ── Main transformer ───────────────────────────────────────────────────────
 
 function markdownToSvelte(
-	markdown: string,
+	meta: Record<string, string>,
+	rawBody: string,
 	title: string,
 	wikilinkMap: Map<string, string>,
 	imageBasenameMap: Map<string, string>,
+	plugins: PluginBlocks,
 ): { pageSvelte: string; pageTs: string; linkedRoutes: string[] } {
-	const { meta, body: rawBody } = parseFrontMatter(markdown);
 	const pageTitle = meta["title"] || title;
 	const pageDescription = meta["description"] || "";
 	const isFullWidth = meta["full-width"]?.trim().toLowerCase() === "true";
@@ -406,7 +540,13 @@ function markdownToSvelte(
 	}
 	collectHeadings(sections);
 
-	const snippets = emitSnippets(sections);
+	const snippets = emitSnippets(sections, plugins.html);
+
+	// Written by writePluginCss() in main.ts — imported only by the pages
+	// that need it, since a plugin's stylesheet can be large.
+	const pluginCssImports = [...plugins.renderedPluginIds]
+		.map((id) => `\n  import "$lib/pluginCss/${id}.css";`)
+		.join("");
 
 	const topLevelCalls = sections
 		.map((s) => `\t\t{@render ${s.snippetName}()}`)
@@ -427,7 +567,7 @@ function markdownToSvelte(
   import { tocHeadings } from "$lib/stores";
   import { applyBase, renderMarkdown } from "$lib/markdownRenderer";
   import LinkPreview from "$lib/LinkPreview.svelte";
-  import EmbedBlock from "$lib/EmbedBlock.svelte";
+  import EmbedBlock from "$lib/EmbedBlock.svelte";${pluginCssImports}
 
   tocHeadings.set(${JSON.stringify(allHeadings, null, 4).replace(/\n/g, "\n  ")});
 

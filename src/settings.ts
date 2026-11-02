@@ -19,6 +19,12 @@ import {
 import { showOpenDialogSync } from "./electronDialog";
 import type SvelteExporterPlugin from "./main";
 import { getVaultBasePath, resolveDestinationPath } from "./obsidianUtil";
+import {
+	isPluginEnabled,
+	isPluginInstalled,
+	PLUGIN_INTEGRATIONS,
+	pluginDisplayName,
+} from "./pluginIntegrations";
 
 export type MarkdownStyle = "obsidian" | "custom" | "none";
 
@@ -54,6 +60,11 @@ export interface SvelteExporterSettings {
 	// and run on every page — see writeCustomScripts() in main.ts and the
 	// import.meta.glob() loader in svelte-lib/routes/+layout.svelte.
 	customScriptPaths: string[];
+	// Plugin ids (from PLUGIN_INTEGRATIONS in pluginIntegrations.ts) whose
+	// blocks should NOT be rendered into the site. Stored as an opt-out
+	// list so every supported plugin — including ones added later — is
+	// exported by default.
+	disabledIntegrations: string[];
 }
 
 export const DEFAULT_SETTINGS: SvelteExporterSettings = {
@@ -70,6 +81,7 @@ export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	exportGraphColors: true,
 	faviconPath: "",
 	customScriptPaths: [],
+	disabledIntegrations: [],
 };
 
 export class SvelteExporterSettingTab extends PluginSettingTab {
@@ -293,6 +305,55 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				});
 			});
+
+		// ── Plugin integrations ───────────────────────────────────────────
+		new Setting(containerEl).setName("Plugin integrations").setHeading();
+
+		const installedIntegrations = PLUGIN_INTEGRATIONS.filter((i) =>
+			isPluginInstalled(this.app, i.pluginId),
+		);
+		if (!installedIntegrations.length) {
+			new Setting(containerEl).setDesc(
+				"No supported plugin is installed. Supported: " +
+					PLUGIN_INTEGRATIONS.map((i) => i.name).join(", ") +
+					".",
+			);
+		}
+		for (const integration of installedIntegrations) {
+			const id = integration.pluginId;
+			const languages = integration.codeBlockLanguages
+				.map((l) => `"${l}"`)
+				.join(", ");
+			const enabled = isPluginEnabled(this.app, id);
+			new Setting(containerEl)
+				.setName(pluginDisplayName(this.app, integration))
+				.setDesc(
+					`Render ${languages} code blocks on the site the way ` +
+						"they look in Obsidian (visual only, without buttons " +
+						"or other interactive features)." +
+						(enabled
+							? ""
+							: " This plugin is currently disabled in Obsidian, " +
+								"so its blocks are exported as plain code."),
+				)
+				.addToggle((toggle) =>
+					toggle
+						.setValue(
+							!this.plugin.settings.disabledIntegrations.includes(id),
+						)
+						.onChange(async (value) => {
+							const disabled = new Set(
+								this.plugin.settings.disabledIntegrations,
+							);
+							if (value) disabled.delete(id);
+							else disabled.add(id);
+							this.plugin.settings.disabledIntegrations = [
+								...disabled,
+							].sort();
+							await this.plugin.saveSettings();
+						}),
+				);
+		}
 
 		// ── Default page ──────────────────────────────────────────────────
 		new Setting(containerEl).setName("Default page").setHeading();

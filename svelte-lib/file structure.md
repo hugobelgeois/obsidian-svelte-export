@@ -2,11 +2,13 @@ src
 -- constants.ts
 -- main.ts
 -- pageexporter.ts
+-- pluginIntegrations.ts
 -- scaffold.ts
 -- settings.ts
 svelte-lib
 -- app.css
 -- layout.css
+-- markdown-fallback.css
 -- markdown.css
 -- routes
 ---- +layout.svelte
@@ -14,11 +16,11 @@ svelte-lib
 ---- +page.svelte
 --lib
 ---- Body.svelte
----- Embedblock.svelte
+---- EmbedBlock.svelte
 ---- FileTree.svelte
 ---- Graph.svelte
 ---- LeftSidebar.svelte
----- Linkpreview.svelte
+---- LinkPreview.svelte
 ---- linkGraph.ts
 ---- markdownRenderer.ts
 ---- RightSidebar.svelte
