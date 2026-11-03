@@ -2,7 +2,6 @@ src
 -- constants.ts
 -- main.ts
 -- pageexporter.ts
--- pluginIntegrations.ts
 -- scaffold.ts
 -- settings.ts
 svelte-lib
