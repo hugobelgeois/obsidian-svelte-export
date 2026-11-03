@@ -2,18 +2,12 @@ import { spawn } from "child_process";
 import * as fs from "fs";
 import { Notice } from "obsidian";
 import * as path from "path";
+import type { ExportContext } from "./exporter";
+import type { ActiveCss, ObsidianCss } from "./obsidianCss";
+import { readJsonFile, writeJsonFile } from "./obsidianUtil";
+import { SyncedFolder } from "./syncedFolder";
 
 // ── Public API ─────────────────────────────────────────────────────────────
-
-/** CSS captured from the running Obsidian instance — see obsidianCss.ts. */
-export interface ObsidianCss {
-	/** Obsidian's built-in app.css — the base every theme builds on. */
-	base: string;
-	/** Appearance settings Obsidian applies inline on <body>. */
-	appearance: string;
-	/** Style Settings plugin's injected variables. */
-	styleSettings: string;
-}
 
 /**
  * Runs a shell command without blocking Obsidian's renderer thread — unlike
@@ -55,14 +49,18 @@ function runCommand(command: string, cwd: string): Promise<void> {
 }
 
 /**
- * Ensure `destRoot` is a ready-to-run SvelteKit project with the
+ * Ensure the export destination is a ready-to-run SvelteKit project with the
  * Obsidian-style layout components in place.
  *
  * - If no `svelte.config.js` is found, runs `npx sv create` + `npm install`,
  *   then removes the boilerplate files that are not needed here.
  * - Copies all plugin-owned files from the `svelte-lib/` folder next to this
- *   file into the SvelteKit project. Files are always overwritten so that
- *   updates are applied on every export.
+ *   file into the SvelteKit project, so that updates are applied on every
+ *   export.
+ *
+ * `generated` holds files of src/ (paths relative to it, "/"-separated)
+ * written with this content instead — in place of svelte-lib/'s own copy
+ * if it has one (e.g. the root page, see defaultPageFiles in siteFiles.ts).
  *
  * `onStatus`, if given, is called with a short human-readable label at each
  * step — used to drive the export progress modal, since this phase can take
@@ -71,14 +69,13 @@ function runCommand(command: string, cwd: string): Promise<void> {
  * Returns `false` if initialisation failed (caller should abort the export).
  */
 export async function ensureSvelteProject(
-	destRoot: string,
-	pluginDir: string,
-	vaultPath: string,
-	configDir: string,
-	selectedTheme: string,
+	ctx: ExportContext,
+	activeCss: ActiveCss,
 	obsidianCss: ObsidianCss,
+	generated: Record<string, string>,
 	onStatus?: (message: string) => void,
 ): Promise<boolean> {
+	const destRoot = ctx.destinationPath;
 	// The `--template minimal` scaffold from `sv create` doesn't emit a
 	// svelte.config.js — kit options (adapter, prerender, …) are configured
 	// inline in vite.config.ts instead — so that's what marks an
@@ -123,8 +120,6 @@ export async function ensureSvelteProject(
 				removeIfExists(path.join(destRoot, name));
 			}
 
-			patchPrerenderErrorHandling(destRoot);
-
 			new Notice("✅ SvelteKit project initialised.");
 		} catch (e) {
 			console.error("[SvelteExporter] sv create failed:", e);
@@ -137,21 +132,15 @@ export async function ensureSvelteProject(
 	}
 
 	// Also overwrites sv create's own src/routes/+layout.svelte.
-	copyPluginFiles(
-		destRoot,
-		pluginDir,
-		vaultPath,
-		configDir,
-		selectedTheme,
-		obsidianCss,
-	);
+	copyPluginFiles(ctx, activeCss, obsidianCss, generated);
 
 	await trackFilenameCaseInGit(destRoot);
 
 	// Runs on every export (not just first scaffold) so a project exported
 	// before this existed — like one already pushed to GitHub with a
 	// broken Pages deployment — gets patched on its next export too.
-	await ensureGitHubPagesDeployment(destRoot, onStatus);
+	await patchViteConfig(destRoot, !isSvelteProject, onStatus);
+	writeGitHubPagesWorkflow(destRoot);
 
 	return true;
 }
@@ -164,12 +153,42 @@ export async function ensureSvelteProject(
  * No-op if destRoot isn't a git repo or git isn't installed.
  */
 async function trackFilenameCaseInGit(destRoot: string): Promise<void> {
-	if (!fs.existsSync(path.join(destRoot, ".git"))) return;
+	const gitDir = path.join(destRoot, ".git");
+	if (!fs.existsSync(gitDir)) return;
+	// Already set (the usual case, from a previous export): read straight
+	// from the repo's config rather than spawning git on every export.
+	// (.git can also be a file — worktree, submodule — then git is asked.)
+	try {
+		const config = fs.readFileSync(path.join(gitDir, "config"), "utf-8");
+		if (/^\s*ignorecase\s*=\s*false\s*$/im.test(config)) return;
+	} catch {
+		// fall through
+	}
 	try {
 		await runCommand("git config core.ignorecase false", destRoot);
 	} catch (e) {
 		console.warn("[SvelteExporter] Could not set core.ignorecase:", e);
 	}
+}
+
+/**
+ * Applies every patch vite.config.ts needs — read and written once. Each
+ * patch is idempotent and returns the content unchanged when it doesn't
+ * apply, so this is cheap and safe to run on every export.
+ */
+async function patchViteConfig(
+	destRoot: string,
+	freshlyCreated: boolean,
+	onStatus?: (message: string) => void,
+): Promise<void> {
+	const viteConfigPath = path.join(destRoot, "vite.config.ts");
+	if (!fs.existsSync(viteConfigPath)) return;
+	const original = fs.readFileSync(viteConfigPath, "utf-8");
+	let content = original;
+	if (freshlyCreated) content = withPrerenderErrorHandling(content);
+	content = await withStaticAdapter(content, destRoot, onStatus);
+	content = withBasePathTyping(content);
+	if (content !== original) fs.writeFileSync(viteConfigPath, content, "utf-8");
 }
 
 /**
@@ -179,16 +198,12 @@ async function trackFilenameCaseInGit(destRoot: string): Promise<void> {
  * output at all. Patch the freshly generated vite.config.ts to log those
  * as warnings instead so one bad link can't block the entire export.
  *
- * Only runs right after `sv create` (see call site) where the file's
- * shape is known; if a future `sv create` template changes it, this is
- * skipped rather than risking a broken vite.config.ts.
+ * Only applied right after `sv create` (see patchViteConfig) where the
+ * file's shape is known; if a future `sv create` template changes it, this
+ * is skipped rather than risking a broken vite.config.ts.
  */
-function patchPrerenderErrorHandling(destRoot: string): void {
-	const viteConfigPath = path.join(destRoot, "vite.config.ts");
-	if (!fs.existsSync(viteConfigPath)) return;
-
-	const original = fs.readFileSync(viteConfigPath, "utf-8");
-	if (original.includes("prerender:")) return; // already patched
+function withPrerenderErrorHandling(original: string): string {
+	if (original.includes("prerender:")) return original; // already patched
 
 	const marker = "adapter: adapter()";
 	if (!original.includes(marker)) {
@@ -197,10 +212,10 @@ function patchPrerenderErrorHandling(destRoot: string): void {
 				"template — skipping the prerender-error-handling patch. " +
 				"A broken wikilink/embed may abort `npm run build`.",
 		);
-		return;
+		return original;
 	}
 
-	const patched = original.replace(
+	return original.replace(
 		marker,
 		`${marker},\n\n` +
 			`\t\t\t// A vault this size will always have a few dead wikilinks or\n` +
@@ -212,30 +227,18 @@ function patchPrerenderErrorHandling(destRoot: string): void {
 			`\t\t\t\t}\n` +
 			`\t\t\t}`,
 	);
-	fs.writeFileSync(viteConfigPath, patched, "utf-8");
 }
 
 // ── GitHub Pages deployment ─────────────────────────────────────────────────
-
-/**
- * Makes the exported project deployable to GitHub Pages out of the box:
- * swaps `sv create`'s default `@sveltejs/adapter-auto` (which doesn't
- * support GitHub Pages and fails the build there) for
- * `@sveltejs/adapter-static`, and writes a GitHub Actions workflow that
- * builds and publishes the site via Pages' own Actions-based deployment —
- * not the legacy "Pages build and deployment" system (the one that warns
- * about being forced onto a newer Node than the actions it runs declare),
- * which only ever runs when a repo's Pages source is left on "Deploy from
- * a branch". Idempotent and safe to call on every export, including one
- * exported before this existed.
- */
-async function ensureGitHubPagesDeployment(
-	destRoot: string,
-	onStatus?: (message: string) => void,
-): Promise<void> {
-	await patchAdapterForStaticHosting(destRoot, onStatus);
-	writeGitHubPagesWorkflow(destRoot);
-}
+// Makes the exported project deployable to GitHub Pages out of the box:
+// `sv create`'s default `@sveltejs/adapter-auto` (which doesn't support
+// GitHub Pages and fails the build there) is swapped for
+// `@sveltejs/adapter-static`, and a GitHub Actions workflow builds and
+// publishes the site via Pages' own Actions-based deployment — not the
+// legacy "Pages build and deployment" system (the one that warns about
+// being forced onto a newer Node than the actions it runs declare), which
+// only ever runs when a repo's Pages source is left on "Deploy from a
+// branch". Idempotent, including on a project exported before this existed.
 
 /**
  * Swaps the adapter-auto import/usage in vite.config.ts for adapter-static,
@@ -244,18 +247,15 @@ async function ensureGitHubPagesDeployment(
  * whatever subpath GitHub Pages serves the site from — "/<repo>" or "" for a
  * custom domain), and a `fallback: '404.html'` page.
  *
- * No-ops once already patched (checks for "adapter-static" in the file), so
- * this is cheap and safe to call on every export.
+ * No-ops once already patched (checks for "adapter-static" in the file).
  */
-async function patchAdapterForStaticHosting(
+async function withStaticAdapter(
+	original: string,
 	destRoot: string,
 	onStatus?: (message: string) => void,
-): Promise<void> {
-	const viteConfigPath = path.join(destRoot, "vite.config.ts");
-	if (!fs.existsSync(viteConfigPath)) return;
-
-	let content = fs.readFileSync(viteConfigPath, "utf-8");
-	if (content.includes("adapter-static")) return; // already patched
+): Promise<string> {
+	if (original.includes("adapter-static")) return original; // already patched
+	let content = original;
 
 	const pkgPath = path.join(destRoot, "package.json");
 	let hasAdapterStatic = false;
@@ -288,7 +288,7 @@ async function patchAdapterForStaticHosting(
 			new Notice(
 				"❌ could not install @sveltejs/adapter-static — GitHub Pages build will fail. See console.",
 			);
-			return;
+			return original;
 		}
 	}
 
@@ -304,10 +304,10 @@ async function patchAdapterForStaticHosting(
 				"template — skipping the GitHub Pages adapter patch. Configure " +
 				"@sveltejs/adapter-static manually to deploy there.",
 		);
-		return;
+		return original;
 	}
 
-	content = content.replace(
+	return content.replace(
 		marker,
 		`adapter: adapter({ fallback: '404.html' }),\n\n` +
 			`\t\t\t// BASE_PATH is set by .github/workflows/deploy.yml at build time to\n` +
@@ -321,10 +321,26 @@ async function patchAdapterForStaticHosting(
 			`\t\t\t// the slash the way a real web server would, so a relative link\n` +
 			`\t\t\t// on that page resolves one directory too high and drops the\n` +
 			`\t\t\t// "/<repo>" prefix entirely — absolute paths sidestep that.\n` +
-			`\t\t\tpaths: { base: process.env.BASE_PATH ?? "", relative: false }`,
+			`\t\t\tpaths: { base: ${BASE_PATH_EXPR}, relative: false }`,
 	);
+}
 
-	fs.writeFileSync(viteConfigPath, content, "utf-8");
+/**
+ * BASE_PATH from the environment, typed the way SvelteKit's `paths.base`
+ * expects ("" or "/…" — what the deploy workflow provides). Read without
+ * the `process` global's types: `sv create` doesn't install @types/node, so
+ * a bare `process.env.BASE_PATH` builds fine (Vite runs on Node) but fails
+ * type-checking (svelte-check, the editor) with "Cannot find name 'process'".
+ */
+const BASE_PATH_EXPR =
+	'((globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env.BASE_PATH ?? "") as "" | `/${string}`';
+
+/** Upgrades a vite.config.ts patched before BASE_PATH_EXPR existed. */
+function withBasePathTyping(content: string): string {
+	return content.replace(
+		'base: process.env.BASE_PATH ?? ""',
+		`base: ${BASE_PATH_EXPR}`,
+	);
 }
 
 const GITHUB_PAGES_WORKFLOW = `name: Deploy to GitHub Pages
@@ -398,18 +414,17 @@ function writeGitHubPagesWorkflow(destRoot: string): void {
 
 /**
  * Recursively copy every file from `svelte-lib/` (shipped alongside the plugin)
- * into `destRoot/src/`, mirroring the directory structure exactly.
- * Files are always overwritten so updates are applied on every export.
+ * into the project's src/, mirroring the directory structure exactly.
+ * Changed files are rewritten so updates are applied on every export, and
+ * ones removed from svelte-lib/ are removed from the export too.
  */
 function copyPluginFiles(
-	destRoot: string,
-	pluginDir: string,
-	vaultPath: string,
-	configDir: string,
-	selectedTheme: string,
+	ctx: ExportContext,
+	activeCss: ActiveCss,
 	obsidianCss: ObsidianCss,
+	extraGenerated: Record<string, string>,
 ): void {
-	const libDir = path.join(pluginDir, "svelte-lib");
+	const libDir = path.join(ctx.pluginDir, "svelte-lib");
 
 	if (!fs.existsSync(libDir)) {
 		console.error(
@@ -419,131 +434,64 @@ function copyPluginFiles(
 		return;
 	}
 
-	// Delete static/ folder before copying (clean slate)
-	removeIfExists(path.join(destRoot, "static"));
+	// static/ isn't wiped here: exporter.ts keeps it in sync (see SyncedFolder),
+	// re-copying only what changed.
 
-	// Copy svelte-lib/ → destRoot/src/
-	// This always includes src/layout.css, which carries the reset, the
-	// Obsidian-style layout shell, and icon-size overrides — so those rules
-	// exist exactly once, regardless of which theme (if any) is selected.
-	const destSrc = path.join(destRoot, "src");
-	copyRecursive(libDir, destSrc);
+	// Files whose exported content is generated rather than svelte-lib/'s
+	// own — written in place of the copy, so an unchanged one is left
+	// untouched instead of being copied then overwritten every export.
+	const generated: Record<string, string> = { ...extraGenerated };
 
 	// Build app.css from Obsidian theme + snippets
-	const obsidianDir = path.join(vaultPath, configDir);
-	buildAppCss(
-		obsidianDir,
-		path.join(destSrc, "app.css"),
-		selectedTheme,
+	const appCss = buildAppCss(
+		fs.readFileSync(path.join(libDir, "app.css"), "utf-8"),
+		activeCss,
 		obsidianCss,
 	);
+	if (appCss !== null) generated["app.css"] = appCss;
 
 	// markdown-fallback.css is the plugin's own approximation of Obsidian's
 	// reading view, only meant for when Obsidian's real app.css couldn't be
 	// captured — otherwise its rules would override the theme's.
 	if (obsidianCss.base) {
-		fs.writeFileSync(
-			path.join(destSrc, "markdown-fallback.css"),
-			"/* Obsidian's own app.css is bundled in app.css — fallback not needed. */\n",
-			"utf-8",
-		);
+		generated["markdown-fallback.css"] =
+			"/* Obsidian's own app.css is bundled in app.css — fallback not needed. */\n";
 	}
+
+	// Copy svelte-lib/ → destRoot/src/
+	// This always includes src/layout.css, which carries the reset, the
+	// Obsidian-style layout shell, and icon-size overrides — so those rules
+	// exist exactly once, regardless of which theme (if any) is selected.
+	syncPluginFiles(libDir, ctx.destinationPath, generated);
 }
 
 /**
- * The active theme's CSS files followed by every enabled snippet, in
- * cascade order — read from appearance.json unless the "Site theme" setting
- * overrides the theme. Shared by buildAppCss (which needs their CSS text)
- * and computeStyleSettingsClasses (which needs the same files' `@settings`
- * metadata), so the two can never disagree about what's "active".
- */
-function readActiveCss(
-	obsidianDir: string,
-	selectedTheme: string,
-): { cssTheme: string; sheets: { label: string; css: string }[] } {
-	let appearance: { cssTheme?: string; enabledCssSnippets?: string[] } = {};
-	const appearancePath = path.join(obsidianDir, "appearance.json");
-	if (fs.existsSync(appearancePath)) {
-		try {
-			appearance = JSON.parse(fs.readFileSync(appearancePath, "utf-8")) as
-				typeof appearance;
-		} catch {
-			console.warn("[SvelteExporter] Could not parse appearance.json");
-		}
-	}
-
-	// selectedTheme="" → follow Obsidian; "__none__" → no theme; else → use named theme
-	const cssTheme =
-		selectedTheme === "__none__"
-			? ""
-			: selectedTheme || (appearance.cssTheme ?? "");
-	const enabledSnippets = appearance.enabledCssSnippets ?? [];
-
-	const sheets: { label: string; css: string }[] = [];
-	const readCssFiles = (
-		dir: string,
-		include: (file: string) => boolean,
-		label: (file: string) => string,
-	) => {
-		if (!fs.existsSync(dir)) return;
-		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-			if (!entry.isFile() || !entry.name.endsWith(".css")) continue;
-			if (!include(entry.name)) continue;
-			sheets.push({
-				label: label(entry.name),
-				css: fs.readFileSync(path.join(dir, entry.name), "utf-8"),
-			});
-		}
-	};
-
-	if (cssTheme) {
-		readCssFiles(
-			path.join(obsidianDir, "themes", cssTheme),
-			() => true,
-			(f) => `theme: ${cssTheme}/${f}`,
-		);
-	}
-	// Only enabled snippets if the list is defined, otherwise all
-	readCssFiles(
-		path.join(obsidianDir, "snippets"),
-		(f) =>
-			!enabledSnippets.length ||
-			enabledSnippets.includes(f.replace(/\.css$/, "")),
-		(f) => `snippet: ${f}`,
-	);
-
-	return { cssTheme, sheets };
-}
-
-/**
- * Replace destRoot/src/app.css with the same cascade Obsidian itself runs
- * with: its built-in app.css, then the active theme (if any), then enabled
- * snippets, then Style Settings' variables and the appearance settings
- * (accent, fonts, font size). If Obsidian's app.css couldn't be captured,
- * the plugin's own app.css stands in for it.
+ * The content of destRoot/src/app.css: the same cascade Obsidian itself
+ * runs with — its built-in app.css, then the active theme (if any), then
+ * enabled snippets, then Style Settings' variables and the appearance
+ * settings (accent, fonts, font size). If Obsidian's app.css couldn't be
+ * captured, the plugin's own app.css (`fallbackCss`) stands in for it.
+ * null if there's nothing at all — svelte-lib/'s app.css is kept as-is.
  *
  * Layout shell / reset / icon-sizing rules are NOT duplicated here — they
  * live once in src/layout.css (shipped unconditionally by copyPluginFiles
  * and imported after app.css), so they keep working no matter what this
- * function writes into app.css.
+ * function puts into app.css.
  */
 function buildAppCss(
-	obsidianDir: string,
-	appCssPath: string,
-	selectedTheme: string,
+	fallbackCss: string,
+	{ cssTheme, sheets }: ActiveCss,
 	obsidianCss: ObsidianCss,
-): void {
-	const { cssTheme, sheets } = readActiveCss(obsidianDir, selectedTheme);
-
+): string | null {
 	const chunks: string[] = [];
 
 	if (obsidianCss.base) {
 		chunks.push("/* obsidian: app.css */");
 		chunks.push(obsidianCss.base);
-	} else if (!cssTheme && fs.existsSync(appCssPath)) {
+	} else if (!cssTheme) {
 		// Obsidian's own base unavailable and no theme — keep the plugin's
 		// approximation (its body.theme-* rules would outrank a theme's)
-		chunks.push(fs.readFileSync(appCssPath, "utf-8"));
+		chunks.push(fallbackCss);
 	}
 
 	for (const { label, css } of sheets) {
@@ -560,182 +508,78 @@ function buildAppCss(
 		chunks.push(obsidianCss.appearance);
 	}
 
-	if (chunks.length > 0) {
-		fs.writeFileSync(appCssPath, chunks.join("\n\n"), "utf-8");
-	}
-}
-
-// ── Style Settings support ──────────────────────────────────────────────────
-//
-// The community "Style Settings" plugin lets a theme/snippet declare an
-// `/* @settings ... */` YAML block describing class-toggle / class-select
-// options (e.g. ITS Theme's "TTRPG" alternate color scheme). Style Settings
-// then adds/removes the corresponding classes on <body> at runtime, based on
-// choices stored in its own data.json — those classes are what the theme's
-// CSS actually gates its alternate look behind, so without them an exported
-// site only ever gets the theme's default appearance, never the chosen
-// variant (e.g. ITS Theme's parchment-style "WOTC/Beyond" scheme).
-//
-// This only handles `class-toggle` and `class-select` — the two setting
-// types that work by toggling a CSS class — not `variable-*` types (which
-// Style Settings applies via injected CSS custom properties instead).
-
-interface StyleSettingsItem {
-	id?: string;
-	type?: string;
-	default?: string;
-}
-
-interface StyleSettingsSheet {
-	sheetId: string;
-	items: StyleSettingsItem[];
+	return chunks.length > 0 ? chunks.join("\n\n") : null;
 }
 
 /**
- * Parses one `/* @settings ... *\/` YAML-ish block (Style Settings' format)
- * out of a CSS file's text. Deliberately not a full YAML parser: it only
- * extracts the sheet's top-level `id`, and each entry directly under
- * `settings:` gets its own `id`/`type`/`default` — everything nested deeper
- * (e.g. a class-select's `options:` list) is skipped, since applying a
- * class only needs the chosen/default value, never the option labels.
+ * Lists every file copyPluginFiles wrote into src/ last time (paths
+ * relative to src/, "/"-separated), so a file since removed from
+ * svelte-lib/ — or no longer generated — can be deleted from the export
+ * too. Only files on this list are ever deleted — never pages, generated
+ * data or anything else in src/.
  */
-function parseStyleSettingsSheet(cssText: string): StyleSettingsSheet | null {
-	const blockMatch = cssText.match(/\/\*\s*@settings([\s\S]*?)\*\//);
-	const blockText = blockMatch?.[1];
-	if (!blockText) return null;
-	const lines = blockText.split("\n");
+const COPIED_FILES_MANIFEST = ".svelte-lib-files.json";
 
-	const settingsLineIdx = lines.findIndex((l) => /^\s*settings:\s*$/.test(l));
-	if (settingsLineIdx < 0) return null;
+/** Generated files written before they were recorded in the manifest —
+ * always treated as ours, so a stale one (e.g. a redirect left by a former
+ * "Default page" setting) is deleted once no longer generated. */
+const ALWAYS_OWNED_FILES = ["routes/+page.ts"];
 
-	const headerText = lines.slice(0, settingsLineIdx).join("\n");
-	const sheetId = headerText.match(/^\s*id:\s*(\S+)/m)?.[1];
-	if (!sheetId) return null;
-
-	const itemLines = lines.slice(settingsLineIdx + 1);
-
-	// Every top-level setting is a "-" bullet at the same indentation — the
-	// first bullet we see establishes that indentation.
-	let baseIndent: number | null = null;
-	for (const l of itemLines) {
-		const indent = l.match(/^(\s*)-/)?.[1]?.length;
-		if (indent !== undefined) {
-			baseIndent = indent;
-			break;
-		}
-	}
-	if (baseIndent === null) return { sheetId, items: [] };
-
-	const items: StyleSettingsItem[] = [];
-	let current: Record<string, string> | null = null;
-	// Once set, lines more indented than this are part of a nested list
-	// (e.g. a class-select's `options:`) and get skipped entirely.
-	let skipUntilIndentLE: number | null = null;
-
-	for (const raw of itemLines) {
-		if (!raw.trim()) continue;
-		const indent = raw.match(/^(\s*)/)?.[1]?.length ?? 0;
-
-		if (skipUntilIndentLE !== null) {
-			if (indent > skipUntilIndentLE) continue;
-			skipUntilIndentLE = null;
-		}
-
-		const bulletMatch = raw.match(/^(\s*)-\s*(.*)$/);
-		if (bulletMatch && indent === baseIndent) {
-			if (current) items.push(current);
-			current = {};
-			const inline = bulletMatch[2];
-			const inlineKv = inline?.match(/^([a-zA-Z_][\w-]*):\s*(.*)$/);
-			const inlineKey = inlineKv?.[1];
-			if (inlineKey !== undefined) current[inlineKey] = (inlineKv?.[2] ?? "").trim();
-			continue;
-		}
-
-		if (!current || indent <= baseIndent) continue;
-
-		const kvMatch = raw.match(/^(\s*)([a-zA-Z_][\w-]*):\s*(.*)$/);
-		const key = kvMatch?.[2];
-		if (key === undefined) continue;
-		current[key] = (kvMatch?.[3] ?? "").trim();
-		if (key === "options") skipUntilIndentLE = indent;
-	}
-	if (current) items.push(current);
-
-	return { sheetId, items };
-}
+/** Files svelte-lib/ shipped before COPIED_FILES_MANIFEST existed, and no
+ * longer does — cleaned up once from projects exported before then. */
+const LEGACY_COPIED_FILES = [
+	"lib/graphConfig.ts",
+	"lib/hiddenPaths.ts",
+	"lib/nodeColors.ts",
+	"lib/styleSettingsClasses.ts",
+	"lib/themeConfig.ts",
+	"lib/markdownRenderer.ts",
+	"lib/EmbedBlock.svelte",
+	"file structure.md",
+];
 
 /**
- * Computes the list of CSS classes the Style Settings plugin would currently
- * have applied to <body> — from the active theme's CSS plus every enabled
- * snippet, combined with the user's actual choices in the Style Settings
- * plugin's own data.json (falling back to each setting's declared default
- * when the user never touched it). Returns [] if Style Settings isn't
- * installed, or nothing resolves.
+ * Mirrors `libDir` into the project's src/ (`generated` content, keyed
+ * by path relative to it, in place of the source file's own — or as an
+ * extra file), then deletes the files a previous sync wrote that are
+ * neither in `libDir` nor generated anymore.
  */
-export function computeStyleSettingsClasses(
-	obsidianDir: string,
-	selectedTheme: string,
-): string[] {
-	const dataPath = path.join(
-		obsidianDir,
-		"plugins",
-		"obsidian-style-settings",
-		"data.json",
+function syncPluginFiles(
+	libDir: string,
+	destRoot: string,
+	generated: Record<string, string>,
+) {
+	const manifestPath = path.join(destRoot, COPIED_FILES_MANIFEST);
+	// Compared case-insensitively: the name on disk may be spelled
+	// differently from the manifest's on a case-insensitive filesystem.
+	// (A file whose name only changed case was renamed by the copy, so
+	// it's kept anyway.)
+	const previous = new Set(
+		[
+			...readJsonFile<string[]>(manifestPath, LEGACY_COPIED_FILES),
+			...ALWAYS_OWNED_FILES,
+		].map((f) => f.toLowerCase()),
 	);
-	if (!fs.existsSync(dataPath)) return [];
-
-	let savedValues: Record<string, unknown>;
-	try {
-		savedValues = JSON.parse(
-			fs.readFileSync(dataPath, "utf-8"),
-		) as Record<string, unknown>;
-	} catch {
-		console.warn(
-			"[SvelteExporter] Could not parse Style Settings' data.json",
-		);
-		return [];
+	const src = new SyncedFolder(path.join(destRoot, "src"));
+	const copied = [
+		...new Set([...listFiles(libDir), ...Object.keys(generated)]),
+	];
+	for (const rel of copied) {
+		const content = generated[rel];
+		if (content !== undefined) src.write(rel, content);
+		else src.copy(path.join(libDir, ...rel.split("/")), rel);
 	}
-
-	const classes = new Set<string>();
-	for (const { css } of readActiveCss(obsidianDir, selectedTheme).sheets) {
-		const sheet = parseStyleSettingsSheet(css);
-		if (!sheet) continue;
-		for (const item of sheet.items) {
-			if (!item.id || !item.type) continue;
-			const key = `${sheet.sheetId}@@${item.id}`;
-			const raw = Object.prototype.hasOwnProperty.call(savedValues, key)
-				? savedValues[key]
-				: item.default;
-
-			if (item.type === "class-toggle") {
-				if (raw === true || raw === "true") classes.add(item.id);
-			} else if (item.type === "class-select") {
-				const value = typeof raw === "string" ? raw.trim() : "";
-				if (value && value !== "none") classes.add(value);
-			}
-		}
-	}
-
-	return [...classes];
+	src.prune((rel) => previous.has(rel.toLowerCase()));
+	writeJsonFile(manifestPath, copied.sort());
 }
 
-function copyRecursive(src: string, dest: string): void {
-	fs.mkdirSync(dest, { recursive: true });
-	for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-		const srcPath = path.join(src, entry.name);
-		const destPath = path.join(dest, entry.name);
-		if (entry.isDirectory()) {
-			copyRecursive(srcPath, destPath);
-		} else {
-			// On a case-insensitive filesystem (Windows, macOS) copying over
-			// an existing file keeps the OLD name's casing — so a renamed
-			// "Embedblock" → "EmbedBlock" would never reach the export.
-			// Removing it first makes the copy take the source's casing.
-			removeIfExists(destPath);
-			fs.copyFileSync(srcPath, destPath);
-		}
-	}
+/** Every file under `dir`, as paths relative to it, "/"-separated. */
+function listFiles(dir: string, prefix = ""): string[] {
+	return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+		entry.isDirectory()
+			? listFiles(path.join(dir, entry.name), prefix + entry.name + "/")
+			: [prefix + entry.name],
+	);
 }
 
 // ── Filesystem helper ──────────────────────────────────────────────────────

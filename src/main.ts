@@ -1,56 +1,23 @@
 import * as fs from "fs";
 import { Notice, Plugin, TAbstractFile, TFile } from "obsidian";
 import * as path from "path";
-import { IMAGE_EXTENSIONS, sanitizeRoutePath } from "./constants";
-import { openInFileExplorer } from "./electronDialog";
+import { IMAGE_EXTENSIONS } from "./constants";
 import { ExportProgressModal } from "./exportModal";
-import { computeNodeColors } from "./graphColors";
-import {
-	captureBodyAppearanceCss,
-	captureObsidianBaseCss,
-	captureStyleSettingsCss,
-} from "./obsidianCss";
+import { SiteExporter } from "./exporter";
 import {
 	EXPORT_CACHE_FILE,
 	getVaultBasePath,
-	readJsonFile,
 	resolveDestinationPath,
-	writeJsonFile,
 } from "./obsidianUtil";
-import { buildLinkMaps, exportFile } from "./pageexporter";
-import {
-	activeIntegrations,
-	buildIntegrationCss,
-	integrationSignature,
-	PLUGIN_INTEGRATIONS,
-	PluginBlockRenderer,
-	PluginIntegration,
-} from "./pluginIntegrations";
-import { computeStyleSettingsClasses, ensureSvelteProject } from "./scaffold";
 import {
 	DEFAULT_SETTINGS,
 	SvelteExporterSettings,
 	SvelteExporterSettingTab,
 } from "./settings";
 
-type ExportCache = Record<string, number>;
-type LinksMap = Record<string, string[]>;
-
-/**
- * .export-plugins.json — what the mtime cache alone can't tell: which
- * pages contain plugin blocks (to re-export them when that plugin's
- * settings change), which local files those blocks reference (static/ is
- * wiped every export, so they're re-copied even for cache-skipped pages),
- * and the runtime CSS captured while rendering them.
- */
-interface PluginExportState {
-	signatures: Record<string, string>;
-	pages: Record<string, { plugins: string[]; assets: string[] }>;
-	runtimeCss: Record<string, Record<string, string>>;
-}
-
 export default class SvelteExporterPlugin extends Plugin {
 	settings: SvelteExporterSettings;
+	private exporting = false;
 
 	async onload() {
 		await this.loadSettings();
@@ -132,7 +99,7 @@ export default class SvelteExporterPlugin extends Plugin {
 	 * A new (or newly moved-in) file/folder inherits its parent folder's
 	 * export selection and hidden state, mirroring the cascade
 	 * addDescendants applies when the parent itself
-	 * is toggled in settings.ts. Without this, a note dropped into an
+	 * is toggled in fileSelector.ts. Without this, a note dropped into an
 	 * already-exported folder is silently never exported until the user
 	 * re-opens settings and toggles it by hand — selectedPaths/hiddenPaths
 	 * only ever contain paths that existed at the time a folder was
@@ -161,334 +128,66 @@ export default class SvelteExporterPlugin extends Plugin {
 		return changed;
 	}
 
+	/** The export itself lives in exporter.ts (SiteExporter). */
 	async runExport() {
-		const { destinationPath: rawDestinationPath, selectedPaths } =
-			this.settings;
+		// Two exports at once (e.g. a double click on the ribbon icon) would
+		// both wipe and rewrite static/, the routes and the state files.
+		if (this.exporting) {
+			new Notice("⚠️ an export is already running.");
+			return;
+		}
+		const files = this.filesToExport();
+		if (!files) return;
 
-		if (!rawDestinationPath) {
+		this.exporting = true;
+		const progressModal = new ExportProgressModal(this.app, files.length);
+		progressModal.open();
+		try {
+			await new SiteExporter(
+				this.app,
+				this.settings,
+				this.getPluginDir(),
+				files,
+				progressModal,
+			).run();
+		} catch (e) {
+			// Anything thrown here (a locked file on Windows, a full disk…)
+			// would otherwise be an unhandled rejection, leaving the progress
+			// modal open forever with no word of what went wrong.
+			console.error("[SvelteExporter] Export failed:", e);
+			progressModal.close();
+			new Notice(
+				`❌ export failed: ${
+					e instanceof Error ? e.message : String(e)
+				}. See console for details.`,
+			);
+		} finally {
+			this.exporting = false;
+		}
+	}
+
+	/** The files to export, or null (after telling the user why) if the
+	 * export can't run. */
+	private filesToExport(): TFile[] | null {
+		const { destinationPath, selectedPaths } = this.settings;
+		if (!destinationPath) {
 			new Notice(
 				"⚠️ please set a destination path in the plugin settings.",
 			);
-			return;
+			return null;
 		}
-		if (!selectedPaths?.length) {
+		if (!selectedPaths.length) {
 			new Notice(
 				"⚠️ no files selected for export. Check the plugin settings.",
 			);
-			return;
+			return null;
 		}
-
 		const files = this.resolveFiles(selectedPaths);
 		if (!files.length) {
 			new Notice("⚠️ no exportable files found in the selected paths.");
-			return;
+			return null;
 		}
-
-		const vaultPath = getVaultBasePath(this.app);
-		const destinationPath = resolveDestinationPath(
-			vaultPath,
-			rawDestinationPath,
-		);
-		const progressModal = new ExportProgressModal(this.app, files.length);
-		progressModal.open();
-
-		// Obsidian's own base CSS + appearance settings, read from this very
-		// window — what makes an exported theme look like it does in Obsidian.
-		const obsidianCss = {
-			base: await captureObsidianBaseCss(),
-			appearance: captureBodyAppearanceCss(),
-			styleSettings: captureStyleSettingsCss(),
-		};
-
-		const ready = await ensureSvelteProject(
-			destinationPath,
-			this.getPluginDir(),
-			vaultPath,
-			this.app.vault.configDir,
-			this.settings.selectedTheme,
-			obsidianCss,
-			(status) => progressModal.setPreparing(status),
-		);
-		if (!ready) {
-			progressModal.close();
-			return;
-		}
-
-		const staticDir = path.join(destinationPath, "static");
-		fs.mkdirSync(staticDir, { recursive: true });
-		// Tells GitHub Pages to skip Jekyll processing, which otherwise
-		// silently drops any file/folder starting with an underscore —
-		// including SvelteKit's own _app/ build output.
-		fs.writeFileSync(path.join(staticDir, ".nojekyll"), "", "utf-8");
-
-		// Single source of truth for "which routes should exist right now" —
-		// reused below to pick the default page, prune stale src/routes/
-		// directories and drop stale links.json entries.
-		const expectedRoutes = new Set(
-			files
-				.filter((f) => f.extension === "md")
-				.map((f) => "/" + sanitizeRoutePath(f.path)),
-		);
-
-		this.writeDefaultPage(destinationPath, expectedRoutes);
-		this.writeFavicon(destinationPath, vaultPath, staticDir);
-		this.writeCustomScripts(destinationPath, vaultPath);
-
-		// A note deleted (or deselected) from the vault would otherwise keep
-		// its previously exported route forever — nothing else ever removes
-		// a src/routes/ leaf directory once written. Prune anything under
-		// routes/ that doesn't correspond to a currently selected markdown
-		// file before the export loop below writes/skips the current set.
-		this.pruneStaleRoutes(
-			destinationPath,
-			new Set(
-				[...expectedRoutes].map((route) =>
-					path.join(destinationPath, "src", "routes", route),
-				),
-			),
-		);
-
-		// Data files read by the site at build time (see svelte-lib/lib/exportData.ts).
-		const libDir = path.join(destinationPath, "src", "lib");
-		const writeLibJson = (name: string, data: unknown) =>
-			writeJsonFile(path.join(libDir, name), data);
-
-		writeLibJson("graphConfig.json", {
-			animationType: this.settings.graphAnimationType,
-		});
-		writeLibJson("themeConfig.json", {
-			defaultColorMode: this.settings.defaultColorMode,
-		});
-
-		// ── styleSettingsClasses.json ───────────────────────────────────────
-		// The community "Style Settings" plugin (if installed) applies things
-		// like ITS Theme's alternate "TTRPG" color schemes by toggling CSS
-		// classes on <body> at runtime — classes the exported site otherwise
-		// has no way to know about, since they live in that plugin's own
-		// data.json rather than in the theme CSS itself.
-		const obsidianDir = path.join(vaultPath, this.app.vault.configDir);
-		const styleSettingsClasses = computeStyleSettingsClasses(
-			obsidianDir,
-			this.settings.selectedTheme,
-		);
-		// Style Settings' variable-* values are gated behind this class.
-		if (obsidianCss.styleSettings) {
-			styleSettingsClasses.push("css-settings-manager");
-		}
-		writeLibJson("styleSettingsClasses.json", styleSettingsClasses);
-
-		// ── nodeColors.json ─────────────────────────────────────────────────
-		// Obsidian's own graph view "Groups" — colors notes matching a saved
-		// query (e.g. path:Bestiaire). Reused here so the exported graph's
-		// big view looks the same, without asking the user to redefine
-		// groups a second time in this plugin's own settings.
-		writeLibJson(
-			"nodeColors.json",
-			this.settings.exportGraphColors
-				? computeNodeColors(this.app, obsidianDir, files)
-				: {},
-		);
-
-		// ── hidden.json ─────────────────────────────────────────────────────
-		// Same sanitization as each file's actual route, or a hidden path
-		// with accents/special characters would never match the FileTree's.
-		writeLibJson(
-			"hidden.json",
-			this.settings.hiddenPaths.map((p) => "/" + sanitizeRoutePath(p)),
-		);
-
-		// ── nameMap.json ────────────────────────────────────────────────────
-		// Maps sanitized route path → original display name, so the FileTree
-		// can show "Léoric" instead of "Leoric". This covers both leaf pages
-		// (md files) AND every ancestor folder, so folder names in the tree
-		// also keep their original spelling/accents instead of the
-		// sanitized route segment.
-		const nameMap: Record<string, string> = {};
-		for (const file of files) {
-			if (file.extension !== "md") continue;
-			nameMap["/" + sanitizeRoutePath(file.path)] = file.basename;
-
-			let parent = file.parent;
-			while (parent && parent.path && parent.path !== "/") {
-				nameMap["/" + sanitizeRoutePath(parent.path)] = parent.name;
-				parent = parent.parent;
-			}
-		}
-		writeLibJson("nameMap.json", nameMap);
-
-		// ── Link graph (real wikilinks, for the Graph view) ─────────────────
-		// Maps each note's route → the routes of the notes it links to.
-		// Loaded first so unchanged (cache-skipped) files keep their
-		// previously-recorded links instead of losing them. Written right
-		// away (like hidden.json/nameMap.json above) so the file exists on
-		// disk immediately — even on a brand new destination with nothing in
-		// it yet, and even if the export loop below hits an error — instead
-		// of only appearing once the whole export finishes.
-		const linksJsonPath = path.join(libDir, "links.json");
-		// Drop link-graph entries for notes no longer part of the export
-		// selection — otherwise a deleted/deselected note's stale entry (and
-		// any dangling reference to it from a note that still links to it)
-		// lingers in the Graph view forever.
-		const linksMap: LinksMap = Object.fromEntries(
-			Object.entries(readJsonFile<LinksMap>(linksJsonPath, {})).filter(
-				([route]) => expectedRoutes.has(route),
-			),
-		);
-		writeJsonFile(linksJsonPath, linksMap);
-
-		// ── Export cache ───────────────────────────────────────────────────
-		const cacheFile = path.join(destinationPath, EXPORT_CACHE_FILE);
-		// Drop cache entries for files no longer part of the export
-		// selection, so a re-selected/re-added file at the same vault path
-		// re-exports fresh rather than immediately being cache-skipped
-		// against a stale mtime.
-		const currentFilePaths = new Set(files.map((f) => f.path));
-		const cache: ExportCache = Object.fromEntries(
-			Object.entries(readJsonFile<ExportCache>(cacheFile, {})).filter(
-				([p]) => currentFilePaths.has(p),
-			),
-		);
-
-		// ── Plugin integrations ──────────────────────────────────────────
-		const pluginStatePath = path.join(
-			destinationPath,
-			".export-plugins.json",
-		);
-		const pluginState: PluginExportState = {
-			signatures: {},
-			pages: {},
-			runtimeCss: {},
-			...readJsonFile<Partial<PluginExportState>>(pluginStatePath, {}),
-		};
-		pluginState.pages = Object.fromEntries(
-			Object.entries(pluginState.pages).filter(([p]) =>
-				currentFilePaths.has(p),
-			),
-		);
-		const active = activeIntegrations(
-			this.app,
-			this.settings.disabledIntegrations,
-		);
-		for (const integration of PLUGIN_INTEGRATIONS) {
-			const id = integration.pluginId;
-			const signature = integrationSignature(
-				this.app,
-				vaultPath,
-				integration,
-				active.includes(integration),
-			);
-			if (pluginState.signatures[id] === signature) continue;
-			// Turned on/off, updated or reconfigured: every page with one
-			// of its blocks must be rendered again, and CSS captured from
-			// the previous configuration is stale.
-			for (const [filePath, page] of Object.entries(pluginState.pages)) {
-				if (page.plugins.includes(id)) delete cache[filePath];
-			}
-			delete pluginState.runtimeCss[id];
-			pluginState.signatures[id] = signature;
-		}
-		const pluginRenderer = new PluginBlockRenderer(this.app, active);
-		const linkMaps = buildLinkMaps(this.app.vault);
-
-		let exported = 0,
-			skipped = 0,
-			errors = 0;
-
-		let processed = 0;
-		for (const file of files) {
-			processed++;
-			progressModal.update(processed, file.path);
-			try {
-				const mtime = file.stat.mtime;
-				const ownRoute = "/" + sanitizeRoutePath(file.path);
-
-				if (IMAGE_EXTENSIONS.has(file.extension)) {
-					// scaffold.ts wipes static/ on every export (clean slate),
-					// so images are always re-copied, flat, by basename —
-					// served at the site's root URL by SvelteKit.
-					fs.copyFileSync(
-						path.join(vaultPath, file.path),
-						path.join(staticDir, file.name),
-					);
-				} else {
-					// The mtime cache only skips the (expensive) markdown
-					// transform — and only once this note's links and
-					// plugin-block data have been recorded at least once,
-					// or they'd stay permanently missing.
-					const cachedMtime = cache[file.path];
-					if (
-						cachedMtime !== undefined &&
-						cachedMtime >= mtime &&
-						ownRoute in linksMap &&
-						file.path in pluginState.pages
-					) {
-						skipped++;
-						continue;
-					}
-					const result = await exportFile(
-						file,
-						destinationPath,
-						this.app.vault,
-						pluginRenderer,
-						linkMaps,
-					);
-					linksMap[ownRoute] = result.linkedRoutes;
-					pluginState.pages[file.path] = {
-						plugins: result.pluginIds,
-						assets: result.pluginAssets,
-					};
-				}
-
-				cache[file.path] = mtime;
-				exported++;
-			} catch (e) {
-				console.error(
-					`[SvelteExporter] Failed to export ${file.path}:`,
-					e,
-				);
-				errors++;
-			}
-		}
-
-		pluginRenderer.dispose();
-		for (const [id, chunks] of pluginRenderer.runtimeCss) {
-			pluginState.runtimeCss[id] = {
-				...pluginState.runtimeCss[id],
-				...Object.fromEntries(chunks),
-			};
-		}
-		this.writePluginCss(destinationPath, vaultPath, active, pluginState);
-		this.copyPluginAssets(staticDir, pluginState);
-		writeJsonFile(pluginStatePath, pluginState);
-		writeJsonFile(cacheFile, cache);
-		writeJsonFile(linksJsonPath, linksMap);
-
-		const parts: string[] = [];
-		if (exported) parts.push(`✅ ${exported} exported`);
-		if (skipped) parts.push(`⏭ ${skipped} skipped (up-to-date)`);
-		if (errors) parts.push(`❌ ${errors} error(s)`);
-		const summary = parts.join(" · ");
-
-		progressModal.finish(summary);
-		setTimeout(() => progressModal.close(), 1200);
-
-		new Notice(summary);
-
-		if (this.settings.openAfterExport) {
-			try {
-				await openInFileExplorer(destinationPath);
-			} catch (e) {
-				new Notice(
-					`⚠️ could not open destination folder: ${
-						e instanceof Error ? e.message : String(e)
-					}`,
-				);
-				console.error(
-					"[SvelteExporter] Could not open destination folder:",
-					e,
-				);
-			}
-		}
+		return files;
 	}
 
 	// ── Vault file resolution ──────────────────────────────────────────────
@@ -497,7 +196,7 @@ export default class SvelteExporterPlugin extends Plugin {
 	 * Resolve `selectedPaths` to actual exportable files.
 	 *
 	 * `selectedPaths` already contains every individual file path that
-	 * should be exported — when a folder is checked in settings.ts,
+	 * should be exported — when a folder is checked in fileSelector.ts,
 	 * `addDescendants` explicitly adds each descendant file (and
 	 * subfolder) to the list. So we only need to pick out the TFile
 	 * entries here; we must NOT re-walk folders, or an individually
@@ -543,277 +242,6 @@ export default class SvelteExporterPlugin extends Plugin {
 		);
 	}
 
-	/**
-	 * Removes every src/routes/ leaf directory (one per exported markdown
-	 * file, written by exportFile in pageexporter.ts) that isn't in
-	 * `expectedDirs`, then cleans up any intermediate folder directory left
-	 * empty by that removal. Only recurses into directories that AREN'T
-	 * themselves a page leaf — a leaf dir (identified by containing
-	 * +page.svelte) is a export target in its own right and never nests
-	 * another one.
-	 *
-	 * Doesn't touch routesRoot's own direct +page.svelte/+page.ts (the
-	 * site's root page, written by writeDefaultPage / scaffolded by
-	 * ensureSvelteProject) since those are files, not directories, and this
-	 * only ever iterates directories.
-	 */
-	private pruneStaleRoutes(
-		destinationPath: string,
-		expectedDirs: Set<string>,
-	): void {
-		const routesRoot = path.join(destinationPath, "src", "routes");
-		if (!fs.existsSync(routesRoot)) return;
-
-		const isPageDir = (dir: string) =>
-			fs.existsSync(path.join(dir, "+page.svelte"));
-
-		const walk = (dir: string): void => {
-			let entries: fs.Dirent[];
-			try {
-				entries = fs.readdirSync(dir, { withFileTypes: true });
-			} catch {
-				return;
-			}
-			for (const entry of entries) {
-				if (!entry.isDirectory()) continue;
-				const full = path.join(dir, entry.name);
-				if (isPageDir(full)) {
-					if (!expectedDirs.has(full)) {
-						fs.rmSync(full, { recursive: true, force: true });
-					}
-					continue;
-				}
-				walk(full);
-				if (fs.existsSync(full) && fs.readdirSync(full).length === 0) {
-					fs.rmdirSync(full);
-				}
-			}
-		};
-
-		walk(routesRoot);
-	}
-
-	/**
-	 * Generates the site's root page (src/routes/+page.svelte + +page.ts)
-	 * according to the "Default page" setting:
-	 * - "" (default): leave the welcome-screen template that
-	 *   ensureSvelteProject just copied from svelte-lib/routes/+page.svelte
-	 *   untouched.
-	 * - "__graph__": show the graph view as a normal full page, not a popup.
-	 * - anything else: a route path — redirect "/" to that note.
-	 */
-	private writeDefaultPage(
-		destinationPath: string,
-		expectedRoutes: Set<string>,
-	) {
-		const { defaultPage } = this.settings;
-		if (defaultPage === "") return;
-
-		const routesDir = path.join(destinationPath, "src", "routes");
-		const pageSveltePath = path.join(routesDir, "+page.svelte");
-		const pageTsPath = path.join(routesDir, "+page.ts");
-
-		if (defaultPage === "__graph__") {
-			fs.writeFileSync(
-				pageSveltePath,
-				'<script lang="ts">\n\timport Graph from "$lib/Graph.svelte";\n</script>\n\n<Graph standalone />\n',
-				"utf-8",
-			);
-			fs.writeFileSync(
-				pageTsPath,
-				"export const prerender = true;\n\n" +
-					"// Resolved before any component renders, so Body.svelte and\n" +
-					"// +layout.svelte can size/lay out the page correctly on the very\n" +
-					"// first (server-rendered) paint — unlike a store a child component\n" +
-					"// would set too late. isGraphPage (distinct from fullBleed, which a\n" +
-					"// full-width note also sets) is what tells +layout.svelte to hide\n" +
-					"// the right sidebar's own redundant mini-graph on this route.\n" +
-					"export const load = () => ({ fullBleed: true, isGraphPage: true });\n",
-				"utf-8",
-			);
-			return;
-		}
-
-		// A specific note's route — but only redirect there if it's still
-		// actually part of the current export selection; otherwise silently
-		// fall back to the welcome screen rather than shipping a redirect
-		// to a page that was never generated.
-		if (!expectedRoutes.has(defaultPage)) return;
-
-		const target = defaultPage.endsWith("/")
-			? defaultPage
-			: defaultPage + "/";
-		fs.writeFileSync(
-			pageSveltePath,
-			`<!-- Redirects to ${target} — see +page.ts -->\n`,
-			"utf-8",
-		);
-		fs.writeFileSync(
-			pageTsPath,
-			'import { redirect } from "@sveltejs/kit";\n' +
-				'import { base } from "$app/paths";\n\n' +
-				"export const prerender = true;\n\n" +
-				"export const load = () => {\n" +
-				// `target` is base-less — the real site base (e.g. on a
-				// GitHub Pages project page) has to be prepended, same as
-				// any other internal link.
-				`\tthrow redirect(307, base + ${JSON.stringify(target)});\n` +
-				"};\n",
-			"utf-8",
-		);
-	}
-
-	/**
-	 * Copies the chosen favicon image into static/ and points app.html's
-	 * <link rel="icon"> at it — app.html isn't one of svelte-lib's own
-	 * templates (it's `sv create`'s, generated once and never touched again
-	 * by copyPluginFiles), so this patches it directly, on every export,
-	 * idempotently: any icon link this method previously added is stripped
-	 * first, so switching images (or clearing the setting) never leaves a
-	 * stale/duplicate tag behind.
-	 */
-	private writeFavicon(
-		destinationPath: string,
-		vaultPath: string,
-		staticDir: string,
-	) {
-		const appHtmlPath = path.join(destinationPath, "src", "app.html");
-		if (!fs.existsSync(appHtmlPath)) return;
-
-		let html = fs.readFileSync(appHtmlPath, "utf-8");
-		html = html.replace(
-			/[ \t]*<link rel="icon"[^>]*data-svelte-exporter-favicon[^>]*>\n?/,
-			"",
-		);
-
-		const faviconPath = this.settings.faviconPath?.trim();
-		if (faviconPath) {
-			const srcPath = path.join(vaultPath, faviconPath);
-			if (fs.existsSync(srcPath)) {
-				const ext = path.extname(srcPath).toLowerCase() || ".png";
-				fs.copyFileSync(srcPath, path.join(staticDir, `favicon${ext}`));
-
-				const mimeByExt: Record<string, string> = {
-					".png": "image/png",
-					".svg": "image/svg+xml",
-					".ico": "image/x-icon",
-					".jpg": "image/jpeg",
-					".jpeg": "image/jpeg",
-					".gif": "image/gif",
-					".webp": "image/webp",
-				};
-				const mime = mimeByExt[ext] ?? "image/png";
-				// %sveltekit.assets% (not a hardcoded "/favicon...") — this
-				// placeholder is filled in by SvelteKit itself with the
-				// correct base-prefixed assets path, so the icon still
-				// resolves under a GitHub Pages-style "/<repo>/" subpath.
-				const tag =
-					`\t\t<link rel="icon" href="%sveltekit.assets%/favicon${ext}" ` +
-					`type="${mime}" data-svelte-exporter-favicon />\n`;
-				html = html.replace(
-					"%sveltekit.head%",
-					`${tag}\t\t%sveltekit.head%`,
-				);
-			} else {
-				new Notice(
-					`⚠️ Favicon file not found in vault: ${faviconPath}`,
-				);
-			}
-		}
-
-		fs.writeFileSync(appHtmlPath, html, "utf-8");
-	}
-
-	/**
-	 * Copies every file in customScriptPaths into src/lib/customScripts/ —
-	 * picked up at build time by the import.meta.glob() call in
-	 * svelte-lib/routes/+layout.svelte, which awaits each module after the
-	 * page mounts and calls its default export (if it's a function). The
-	 * folder is wiped and rewritten on every export (like static/ in
-	 * scaffold.ts) so a script removed from settings doesn't linger in the
-	 * exported project. Subfolders are flattened into the filename (e.g.
-	 * "scripts/foo.ts" → "scripts__foo.ts") so two files with the same
-	 * basename in different vault folders can't collide once copied flat.
-	 */
-	private writeCustomScripts(destinationPath: string, vaultPath: string) {
-		const scriptsDir = path.join(
-			destinationPath,
-			"src",
-			"lib",
-			"customScripts",
-		);
-		fs.rmSync(scriptsDir, { recursive: true, force: true });
-
-		const scriptPaths = this.settings.customScriptPaths;
-		if (!scriptPaths.length) return;
-
-		fs.mkdirSync(scriptsDir, { recursive: true });
-		for (const scriptPath of scriptPaths) {
-			const srcPath = path.join(vaultPath, scriptPath);
-			if (!fs.existsSync(srcPath)) {
-				new Notice(
-					`⚠️ Custom script not found in vault: ${scriptPath}`,
-				);
-				continue;
-			}
-			// Strip any leading dot (e.g. a source path under ".obsidian/...")
-			// — Vite's import.meta.glob excludes dotfiles by default, so a
-			// flattened name starting with "." would silently never match
-			// the "*.{js,ts}" pattern in +layout.svelte.
-			const flatName = scriptPath.replace(/\//g, "__").replace(/^\.+/, "");
-			fs.copyFileSync(srcPath, path.join(scriptsDir, flatName));
-		}
-	}
-
-	// ── Plugin integrations ────────────────────────────────────────────────
-
-	/**
-	 * Writes src/lib/pluginCss/<pluginId>.css for every active integration —
-	 * imported by the pages that render one of its blocks (see
-	 * markdownToSvelte in pageexporter.ts). Wiped first, so a disabled
-	 * integration's stylesheet doesn't linger; its pages were re-exported
-	 * without the import, since disabling it changed its signature.
-	 */
-	private writePluginCss(
-		destinationPath: string,
-		vaultPath: string,
-		active: PluginIntegration[],
-		pluginState: PluginExportState,
-	) {
-		const cssDir = path.join(destinationPath, "src", "lib", "pluginCss");
-		fs.rmSync(cssDir, { recursive: true, force: true });
-		if (!active.length) return;
-		fs.mkdirSync(cssDir, { recursive: true });
-		for (const integration of active) {
-			const css = buildIntegrationCss(
-				this.app,
-				vaultPath,
-				integration,
-				Object.values(pluginState.runtimeCss[integration.pluginId] ?? {}),
-			);
-			fs.writeFileSync(
-				path.join(cssDir, `${integration.pluginId}.css`),
-				css,
-				"utf-8",
-			);
-		}
-	}
-
-	/** Local files referenced by rendered plugin blocks, copied flat into
-	 * static/ (where their rewritten URLs point — see rewriteLocalUrls). */
-	private copyPluginAssets(staticDir: string, pluginState: PluginExportState) {
-		const assets = new Set(
-			Object.values(pluginState.pages).flatMap((p) => p.assets),
-		);
-		for (const asset of assets) {
-			try {
-				fs.copyFileSync(asset, path.join(staticDir, path.basename(asset)));
-			} catch (e) {
-				console.warn(`[SvelteExporter] Could not copy ${asset}:`, e);
-			}
-		}
-	}
-
 	// ── Cache ──────────────────────────────────────────────────────────────
 
 	clearCache() {
@@ -827,7 +255,10 @@ export default class SvelteExporterPlugin extends Plugin {
 		const saved = (await this.loadData()) as
 			| Partial<SvelteExporterSettings>
 			| null;
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+		// Deep-copied: a shallow merge alone means a list missing from
+		// data.json would otherwise be DEFAULT_SETTINGS' own array, and the
+		// in-place push()es (applyParentInheritance…) would mutate it.
+		this.settings = structuredClone({ ...DEFAULT_SETTINGS, ...saved });
 		// Settings that no longer exist — dropped so they don't linger in data.json.
 		const settings = this.settings as unknown as Record<string, unknown>;
 		delete settings.markdownStyle;

@@ -1,3 +1,6 @@
+import * as fs from "fs";
+import * as path from "path";
+
 /**
  * Captures the CSS Obsidian itself is running with, straight from the live
  * document — the plugin runs inside Obsidian's own renderer, so this is the
@@ -70,7 +73,7 @@ export function captureStyleSettingsCss(): string {
 	return document.getElementById("css-settings-manager")?.textContent ?? "";
 }
 
-async function inlineRelativeUrls(css: string, baseHref: string): Promise<string> {
+export async function inlineRelativeUrls(css: string, baseHref: string): Promise<string> {
 	const urlPattern = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
 	const targets = new Set<string>();
 	for (const match of css.matchAll(urlPattern)) {
@@ -128,4 +131,86 @@ function guessMimeType(ref: string): string {
 		default:
 			return "application/octet-stream";
 	}
+}
+
+/** CSS captured from the running Obsidian instance — see the capture*() functions above. */
+export interface ObsidianCss {
+	/** Obsidian's built-in app.css — the base every theme builds on. */
+	base: string;
+	/** Appearance settings Obsidian applies inline on <body>. */
+	appearance: string;
+	/** Style Settings plugin's injected variables. */
+	styleSettings: string;
+}
+
+/** The active theme and snippets — see readActiveCss(). */
+export interface ActiveCss {
+	cssTheme: string;
+	sheets: { label: string; css: string }[];
+}
+
+/**
+ * The active theme's CSS files followed by every enabled snippet, in
+ * cascade order — read from appearance.json unless the "Site theme" setting
+ * overrides the theme. Read once per export and shared by buildAppCss
+ * (which needs their CSS text) and computeStyleSettingsClasses (which needs
+ * the same files' `@settings` metadata), so the two can never disagree
+ * about what's "active".
+ */
+export function readActiveCss(
+	obsidianDir: string,
+	selectedTheme: string,
+): ActiveCss {
+	let appearance: { cssTheme?: string; enabledCssSnippets?: string[] } = {};
+	const appearancePath = path.join(obsidianDir, "appearance.json");
+	if (fs.existsSync(appearancePath)) {
+		try {
+			appearance = JSON.parse(fs.readFileSync(appearancePath, "utf-8")) as
+				typeof appearance;
+		} catch {
+			console.warn("[SvelteExporter] Could not parse appearance.json");
+		}
+	}
+
+	// selectedTheme="" → follow Obsidian; "__none__" → no theme; else → use named theme
+	const cssTheme =
+		selectedTheme === "__none__"
+			? ""
+			: selectedTheme || (appearance.cssTheme ?? "");
+	const enabledSnippets = appearance.enabledCssSnippets ?? [];
+
+	const sheets: { label: string; css: string }[] = [];
+	const readCssFiles = (
+		dir: string,
+		include: (file: string) => boolean,
+		label: (file: string) => string,
+	) => {
+		if (!fs.existsSync(dir)) return;
+		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+			if (!entry.isFile() || !entry.name.endsWith(".css")) continue;
+			if (!include(entry.name)) continue;
+			sheets.push({
+				label: label(entry.name),
+				css: fs.readFileSync(path.join(dir, entry.name), "utf-8"),
+			});
+		}
+	};
+
+	if (cssTheme) {
+		readCssFiles(
+			path.join(obsidianDir, "themes", cssTheme),
+			() => true,
+			(f) => `theme: ${cssTheme}/${f}`,
+		);
+	}
+	// Only enabled snippets if the list is defined, otherwise all
+	readCssFiles(
+		path.join(obsidianDir, "snippets"),
+		(f) =>
+			!enabledSnippets.length ||
+			enabledSnippets.includes(f.replace(/\.css$/, "")),
+		(f) => `snippet: ${f}`,
+	);
+
+	return { cssTheme, sheets };
 }

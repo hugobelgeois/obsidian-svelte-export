@@ -1,0 +1,53 @@
+src — the Obsidian plugin (bundled into main.js)
+-- main.ts — plugin entry: commands, settings, file rename/create bookkeeping
+-- exporter.ts — one export run (SiteExporter): state/cache, note rendering loop, plugin CSS
+-- siteFiles.ts — site data JSON, root page, app.html, custom scripts, search index, sitemap
+-- settings.ts — settings tab
+-- fileSelector.ts — the settings tab's Export/Visible file tree
+-- scaffold.ts — creates/updates the SvelteKit project, copies svelte-lib/, builds app.css, GitHub Pages setup
+-- pageexporter.ts — writes one +page.svelte/+page.ts per note
+-- syncedFolder.ts — keeps a folder of the export in sync (static/, note pages, svelte-lib/ copy): copies changed files, prunes stale ones
+-- noteRenderer.ts — renders notes with Obsidian's own renderer, rewrites links/embeds/images for the site
+-- pluginIntegrations.ts — supported community plugins (CSS, settings toggle)
+-- obsidianCss.ts — captures Obsidian's app.css, appearance and Style Settings CSS; reads the active theme and snippets
+-- styleSettings.ts — body classes the Style Settings plugin would apply (class-toggle/class-select)
+-- obsidianGraph.ts — graph view settings (color groups, forces) from graph.json
+-- obsidianUtil.ts — vault paths, JSON file helpers
+-- constants.ts — route/file path helpers shared by the exporter
+-- electronDialog.ts — native file/folder pickers
+-- exportModal.ts — export progress modal
+svelte-lib — copied into the exported project's src/ on every export
+-- app.css — fallback theme variables (replaced by Obsidian's CSS when available)
+-- layout.css — layout shell, reset, icon sizes
+-- markdown.css — reading view structure (sizing, tables, page header)
+-- markdown-fallback.css — reading view look when Obsidian's app.css couldn't be captured
+-- routes
+---- +layout.svelte — app shell: sidebars, theme, custom scripts
+---- +layout.ts — prerender settings
+---- +page.svelte — welcome page (replaced by the "Default page" setting)
+-- lib
+---- Body.svelte — main content area
+---- LeftSidebar.svelte — search box, file tree, search results
+---- FileTree.svelte — file tree
+---- SearchResults.svelte — full-text search results
+---- searchText.ts — search matching (accent/case-insensitive)
+---- RightSidebar.svelte — graph preview, table of contents, theme toggle
+---- SidebarShell.svelte — shared sidebar chrome
+---- Toc.svelte — table of contents
+---- Graph.svelte — graph view (sidebar preview, popup, full page)
+---- graphDraw.ts — draws a frame of the graph (edges, nodes, labels, animation effects)
+---- graphView.ts — pan/zoom geometry of a graph canvas (fit, zoom, hit-testing)
+---- graphPhysics.ts — Obsidian's graph simulation (d3-force port)
+---- graphTypes.ts — graph node type
+---- animationRegistry.ts — graph animations found in animations/
+---- animations/ — one file per graph animation (+ types.ts)
+---- easing.ts — easing helpers for the animations
+---- LinkPreview.svelte — hover preview of internal links (mounted once by +layout.svelte)
+---- wikiFetch.ts — fetches a page (or one of its sections) for the preview, cached per route
+---- linkGraph.ts — graph edges from links.json
+---- siteTree.ts — file tree built from the exported routes
+---- routePath.ts — base-path-free route of the current page
+---- basePath.ts — swaps the base-path placeholder in exported HTML
+---- exportData.ts — data files written by the plugin at export time
+---- Icon.svelte, ThemeIcon.svelte — icons
+tests — vitest tests (npm test); obsidianStub.ts stands in for the obsidian module

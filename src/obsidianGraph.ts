@@ -2,6 +2,10 @@ import * as fs from "fs";
 import { App, TFile } from "obsidian";
 import * as path from "path";
 import { sanitizeRoutePath } from "./constants";
+import { readJsonFile } from "./obsidianUtil";
+
+// Reads the vault's core graph view settings (.obsidian/graph.json) so the
+// exported graph matches it: color groups and force settings.
 
 interface ColorGroup {
 	query: string;
@@ -10,6 +14,53 @@ interface ColorGroup {
 
 interface GraphJson {
 	colorGroups?: ColorGroup[];
+	centerStrength?: number;
+	repelStrength?: number;
+	linkStrength?: number;
+	linkDistance?: number;
+}
+
+/** Forces as Obsidian's graph worker receives them — mirrored by the
+ * GraphForces type in svelte-lib/lib/graphPhysics.ts. */
+export interface GraphForces {
+	centerStrength: number;
+	repelStrength: number;
+	linkStrength: number;
+	linkDistance: number;
+}
+
+/** Obsidian's own conversion from a "center/link force" slider position
+ * (0–1, what graph.json stores) to the force actually applied. */
+function sliderToForce(value: number): number {
+	const min = 0.01;
+	return (Math.pow(min, 1 - value) - min) / (1 - min);
+}
+
+/** Default slider positions of Obsidian's graph view "Forces" section. */
+const DEFAULT_FORCE_SLIDERS = {
+	centerStrength: 1 - Math.log(0.1 * (1 - 0.01) + 0.01) / Math.log(0.01),
+	repelStrength: 10,
+	linkStrength: 1,
+	linkDistance: 250,
+};
+
+/**
+ * The graph view's "Forces" settings, converted the same way Obsidian
+ * converts them before handing them to its simulation: center and link
+ * force along a log scale, repel force cubed, link distance as-is.
+ */
+export function computeGraphForces(obsidianDir: string): GraphForces {
+	const saved = readJsonFile<GraphJson>(path.join(obsidianDir, "graph.json"), {});
+	const slider = (key: keyof typeof DEFAULT_FORCE_SLIDERS) => {
+		const v = saved[key];
+		return typeof v === "number" ? v : DEFAULT_FORCE_SLIDERS[key];
+	};
+	return {
+		centerStrength: sliderToForce(slider("centerStrength")),
+		repelStrength: slider("repelStrength") ** 3,
+		linkStrength: sliderToForce(slider("linkStrength")),
+		linkDistance: slider("linkDistance"),
+	};
 }
 
 /**
@@ -38,8 +89,7 @@ function tokenizeQuery(query: string): string[] {
  * reimplementing here for what's normally a handful of simple folder/tag
  * groupings.
  */
-function matchesQuery(query: string, file: TFile, app: App): boolean {
-	const tokens = tokenizeQuery(query);
+function matchesQuery(tokens: string[], file: TFile, app: App): boolean {
 	if (!tokens.length) return false;
 
 	for (const token of tokens) {
@@ -115,23 +165,23 @@ export function computeNodeColors(
 		console.warn("[SvelteExporter] Could not parse the vault's graph.json");
 		return {};
 	}
-	if (!colorGroups.length) return {};
+	// Parsed once up front, not once per file.
+	const groups = colorGroups
+		.filter((g) => g.query && typeof g.color?.rgb === "number")
+		.map((g) => ({
+			tokens: tokenizeQuery(g.query),
+			color: rgbIntToHex(g.color.rgb),
+		}));
+	if (!groups.length) return {};
 
 	const result: Record<string, string> = {};
 	for (const file of files) {
 		if (file.extension !== "md") continue;
-		for (const group of colorGroups) {
-			if (!group.query || typeof group.color?.rgb !== "number") continue;
-			if (matchesQuery(group.query, file, app)) {
-				// Trailing slash to match Graph.svelte's node ids — leaf
-				// (file) nodes in siteTree.ts always carry one, unlike the
-				// route strings used elsewhere (nameMap.json, hidden.json).
-				result["/" + sanitizeRoutePath(file.path) + "/"] = rgbIntToHex(
-					group.color.rgb,
-				);
-				break;
-			}
-		}
+		const group = groups.find((g) => matchesQuery(g.tokens, file, app));
+		// Trailing slash to match Graph.svelte's node ids — leaf (file)
+		// nodes in siteTree.ts always carry one, unlike the route strings
+		// used elsewhere (nameMap.json, hidden.json).
+		if (group) result["/" + sanitizeRoutePath(file.path) + "/"] = group.color;
 	}
 	return result;
 }

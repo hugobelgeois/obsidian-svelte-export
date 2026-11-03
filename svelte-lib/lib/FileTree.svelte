@@ -55,10 +55,6 @@
 		return openFolders[p] ?? ancestorPaths.has(p);
 	}
 	const toggle = (p: string) => { openFolders[p] = !isOpen(p); };
-
-	function itemStyle(depth: number): string {
-		return `padding-inline-start: ${(depth - 1) * 17 + 8}px;`;
-	}
 </script>
 
 {#snippet fileNode(node: TreeNode)}
@@ -67,7 +63,6 @@
 			class="tree-item-self nav-file-title is-clickable"
 			class:is-active={currentPath === node.path}
 			data-path={node.path}
-			style={itemStyle(node.depth)}
 		>
 			<a href={base + node.path} class="tree-item-inner nav-file-title-content">
 				{node.name}
@@ -85,7 +80,6 @@
 			tabindex="0"
 			onclick={() => toggle(node.path)}
 			onkeydown={(e) => e.key === "Enter" && toggle(node.path)}
-			style={itemStyle(node.depth)}
 		>
 			<div class="tree-item-icon collapse-icon" class:is-collapsed={!isOpen(node.path) && !query}>
 				<Icon size={24} class="svg-icon right-triangle">

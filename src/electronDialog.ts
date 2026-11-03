@@ -4,7 +4,7 @@
  * explorer) — available in Obsidian's desktop app, but with no official
  * `@types/electron` package installed, so the untyped `require("electron")`
  * boundary is isolated to this one file instead of scattering `any` through
- * main.ts/settings.ts.
+ * exporter.ts/settings.ts.
  */
 
 interface OpenDialogOptions {

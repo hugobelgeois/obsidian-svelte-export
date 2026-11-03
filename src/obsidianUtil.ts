@@ -66,8 +66,22 @@ export function readJsonFile<T>(filePath: string, fallback: T): T {
 }
 
 export function writeJsonFile(filePath: string, data: unknown): void {
-	fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+	writeFileIfChanged(filePath, JSON.stringify(data, null, 2));
 }
 
-/** Records the mtime of every exported file — see runExport() in main.ts. */
+/**
+ * Writes `content` to `filePath` unless the file already holds exactly
+ * that. An unchanged file keeps its mtime, so a running `npm run dev`
+ * doesn't reload (or rebuild) for files an export rewrote identically.
+ */
+function writeFileIfChanged(filePath: string, content: string): void {
+	try {
+		if (fs.readFileSync(filePath, "utf-8") === content) return;
+	} catch {
+		// missing or unreadable — written below
+	}
+	fs.writeFileSync(filePath, content, "utf-8");
+}
+
+/** Records the mtime of every exported file — see SiteExporter in exporter.ts. */
 export const EXPORT_CACHE_FILE = ".export-cache.json";

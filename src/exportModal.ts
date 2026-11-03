@@ -1,7 +1,7 @@
 import { App, Modal, ProgressBarComponent } from "obsidian";
 
 /**
- * Shows export progress in main.ts's runExport(): an indeterminate
+ * Shows export progress in SiteExporter.run() (exporter.ts): an indeterminate
  * (animated, no known duration) bar while the SvelteKit project is being
  * scaffolded/npm-installed, then a determinate bar for the per-file export
  * loop, whose total is known upfront. Obsidian already renders a built-in

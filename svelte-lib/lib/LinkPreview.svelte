@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { browser } from "$app/environment";
-	import { onDestroy, onMount } from "svelte";
+	import { afterNavigate } from "$app/navigation";
+	import { onMount } from "svelte";
 	import Icon from "$lib/Icon.svelte";
 	import { fetchWikiHtml } from "$lib/wikiFetch";
 
@@ -15,21 +15,12 @@
 	let loading = $state(false);
 	let error = $state(false);
 
-	const cache = new Map<string, string>();
 	let showTimer: ReturnType<typeof setTimeout> | null = null;
 	let hideTimer: ReturnType<typeof setTimeout> | null = null;
-	let panelEl: HTMLElement;
-
-	// ── Fetch (with per-panel cache on top of the shared fetch helper) ──────
-
-	async function loadPreview(route: string, fragment: string): Promise<string> {
-		if (!browser) throw new Error("SSR");
-		const cacheKey = route + (fragment ? "#" + fragment : "");
-		if (cache.has(cacheKey)) return cache.get(cacheKey)!;
-		const result = await fetchWikiHtml(route, fragment);
-		cache.set(cacheKey, result);
-		return result;
-	}
+	/** Bumped for every preview shown — a fetch that resolves once another
+	 * preview has replaced its own is dropped instead of overwriting it. */
+	let requestId = 0;
+	let panelEl: HTMLElement | undefined = $state();
 
 	// ── Hover ──────────────────────────────────────────────────────────────
 
@@ -47,20 +38,26 @@
 		if (!link) return;
 
 		clearTimeout(hideTimer ?? undefined);
+		// mouseover fires again for every element inside the link — only
+		// the latest one may show the preview.
+		clearTimeout(showTimer ?? undefined);
 		showTimer = setTimeout(async () => {
 			const route = link.dataset.wikiHref!;
 			const fragment = link.dataset.wikiFragment ?? "";
+			const id = ++requestId;
 			placeAt(e.clientX + 16, e.clientY + 16);
 			loading = true;
 			error = false;
 			visible = true;
 			html = "";
 			try {
-				html = await loadPreview(route, fragment);
+				// Pages are cached by fetchWikiHtml for the whole visit.
+				const result = await fetchWikiHtml(route, fragment);
+				if (id === requestId) html = result;
 			} catch {
-				error = true;
+				if (id === requestId) error = true;
 			} finally {
-				loading = false;
+				if (id === requestId) loading = false;
 			}
 		}, 300);
 	}
@@ -122,6 +119,7 @@
 	}
 
 	function closePanel() {
+		requestId++;
 		pinned = false;
 		visible = false;
 		html = "";
@@ -145,21 +143,27 @@
 
 	// ── Lifecycle ──────────────────────────────────────────────────────────
 
+	// Mounted once by +layout.svelte for the whole visit — a hover preview
+	// belongs to the page it was opened from, but a pinned one is kept
+	// across navigations until it's closed or unpinned.
+	afterNavigate(() => {
+		clearTimeout(showTimer ?? undefined);
+		if (!pinned) closePanel();
+	});
+
 	onMount(() => {
 		document.addEventListener("mouseover", onMouseOver);
 		document.addEventListener("mouseout", onMouseOut);
 		window.addEventListener("mousemove", onWindowMouseMove);
 		window.addEventListener("mouseup", onWindowMouseUp);
-	});
-
-	onDestroy(() => {
-		if (!browser) return;
-		document.removeEventListener("mouseover", onMouseOver);
-		document.removeEventListener("mouseout", onMouseOut);
-		window.removeEventListener("mousemove", onWindowMouseMove);
-		window.removeEventListener("mouseup", onWindowMouseUp);
-		clearTimeout(showTimer ?? undefined);
-		clearTimeout(hideTimer ?? undefined);
+		return () => {
+			document.removeEventListener("mouseover", onMouseOver);
+			document.removeEventListener("mouseout", onMouseOut);
+			window.removeEventListener("mousemove", onWindowMouseMove);
+			window.removeEventListener("mouseup", onWindowMouseUp);
+			clearTimeout(showTimer ?? undefined);
+			clearTimeout(hideTimer ?? undefined);
+		};
 	});
 </script>
 
@@ -171,8 +175,8 @@
 		class:is-dragging={isDragging}
 		style="left:{x}px; top:{y}px;"
 		bind:this={panelEl}
-		onmouseover={onPanelMouseOver}
-		onmouseout={onPanelMouseOut}
+		onmouseenter={onPanelMouseOver}
+		onmouseleave={onPanelMouseOut}
 		onmousedown={onPanelMouseDown}
 	>
 		<div class="wiki-preview-toolbar">
@@ -309,8 +313,8 @@
 		mask-image: linear-gradient(to bottom, black 80%, transparent 100%);
 	}
 
-	/* First-heading/image treatment for .wiki-preview-content is shared
-	   with .wiki-embed-content in markdown.css. */
+	/* First-heading/image treatment for .wiki-preview-content lives in
+	   markdown.css — {@html} content is out of reach of scoped styles. */
 
 	.wiki-preview-status {
 		color: var(--text-muted);

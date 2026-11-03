@@ -61,5 +61,9 @@ export default tseslint.config(
 		// tsconfig/build, and lints as its own SvelteKit project once
 		// scaffolded.
 		"svelte-lib",
+		// Typed against tests/obsidianStub.ts (aliased as "obsidian" in
+		// vitest.config.ts), not the real API this config checks src/ with.
+		"tests",
+		"vitest.config.ts",
 	]),
 );

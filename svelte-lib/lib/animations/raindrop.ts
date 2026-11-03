@@ -1,3 +1,4 @@
+import { riseFall } from "../easing";
 import type { GNode } from "../graphTypes";
 import type { GraphAnimation } from "./types";
 
@@ -32,19 +33,6 @@ function sizeWeight(n: GNode): number {
 	return MIN_WEIGHT + (1 - MIN_WEIGHT) * t;
 }
 
-/** Zero velocity at both t=0 and t=1 — a soft start and a soft arrival. */
-function smoothstep(t: number): number {
-	const c = Math.min(1, Math.max(0, t));
-	return c * c * (3 - 2 * c);
-}
-
-/** Quick dip/rise to the extreme, then a slower ease back to neutral — zero
- * at both ends, so consecutive beats hand off with no jump. */
-function beatEnvelope(local: number): number {
-	if (local < BEAT_DIP_MS) return smoothstep(local / BEAT_DIP_MS);
-	return 1 - smoothstep((local - BEAT_DIP_MS) / BEAT_RETURN_MS);
-}
-
 // Each beat also sends a small ripple into nearby nodes: an attracting pull
 // during a shrink beat, a repelling push during a grow beat — with the
 // same decaying amplitude as the beat itself (and the drop's own size
@@ -60,12 +48,6 @@ const WAVE_MAX_PUSH = 3; // px at the crest, right at the source, at full amplit
  * the source and keeps slowing down the farther it has to travel. */
 function arrivalTime(dist: number): number {
 	return (dist * dist) / (WAVE_SPEED * WAVE_MAX_REACH);
-}
-
-/** 0 → 1 over the gentle rise, then 1 → 0 over the return. */
-function waveEnvelope(local: number): number {
-	if (local < WAVE_PUSH_MS) return smoothstep(local / WAVE_PUSH_MS);
-	return 1 - smoothstep((local - WAVE_PUSH_MS) / WAVE_RETURN_MS);
 }
 
 interface Beat {
@@ -103,7 +85,6 @@ function spawnDrop(now: number, pool: GNode[]) {
 }
 
 const raindrop: GraphAnimation = {
-	label,
 	intervalSeconds: TICK_SECONDS,
 
 	trigger(ctx) {
@@ -114,7 +95,7 @@ const raindrop: GraphAnimation = {
 		const pool = ctx.nodes.filter((n) => n.revealed);
 		if (!pool.length) return;
 
-		// Always at least one, up to three — randomized count each tick, so
+		// Always at least one, up to MAX_SPAWNS_PER_TICK — randomized count each tick, so
 		// it never reads as a strict one-drop-per-tick rhythm.
 		const count =
 			MIN_SPAWNS_PER_TICK +
@@ -131,7 +112,10 @@ const raindrop: GraphAnimation = {
 			const local = now - d.start;
 			const beat = currentBeat(local, d.beats);
 			if (!beat) continue;
-			const e = beatEnvelope(local - beat.start);
+			// Quick dip/rise to the extreme, then a slower ease back to
+			// neutral — zero at both ends, so consecutive beats hand off
+			// with no jump.
+			const e = riseFall(local - beat.start, BEAT_DIP_MS, BEAT_RETURN_MS);
 			scale += beat.sign * beat.amplitude * MAX_SIZE_DELTA * d.weight * e;
 		}
 		return scale;
@@ -165,7 +149,7 @@ const raindrop: GraphAnimation = {
 				beat.amplitude *
 				d.weight *
 				ampFalloff *
-				waveEnvelope(waveLocal);
+				riseFall(waveLocal, WAVE_PUSH_MS, WAVE_RETURN_MS);
 
 			// Shrinking (sign -1) pulls neighbors in; growing (sign 1) pushes
 			// them away — same direction vector, just flipped. Contributions

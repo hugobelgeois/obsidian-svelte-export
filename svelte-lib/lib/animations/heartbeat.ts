@@ -1,3 +1,4 @@
+import { riseFall } from "../easing";
 import type { GNode } from "../graphTypes";
 import type { GraphAnimation } from "./types";
 
@@ -14,22 +15,6 @@ const RETURN_MS = 1400; // slower, gentle settle back to rest
 const LOCAL_MS = PUSH_MS + RETURN_MS;
 const MAX_PUSH = 4; // px at the peak, right where the wavefront currently is
 
-/** Zero velocity at both t=0 and t=1 — a soft start and a soft arrival,
- * unlike a plain quadratic ease which still "snaps" into motion. */
-function smoothstep(t: number): number {
-	const c = Math.min(1, Math.max(0, t));
-	return c * c * (3 - 2 * c);
-}
-
-/** 0 → 1 over the gentle rise, then 1 → 0 over the much slower return —
- * smoothstep on both legs means the crest itself is rounded (zero velocity
- * where rise meets return) instead of a sharp point, and the whole thing
- * starts and ends completely at rest — a rolling swell rather than a jolt. */
-function pulseEnvelope(local: number): number {
-	if (local < PUSH_MS) return smoothstep(local / PUSH_MS);
-	return 1 - smoothstep((local - PUSH_MS) / RETURN_MS);
-}
-
 let origin: { x: number; y: number } | null = null;
 let startTime = 0;
 /** How long the wave stays relevant for — time to reach the farthest node,
@@ -38,8 +23,6 @@ let startTime = 0;
 let activeMs = 0;
 
 const heartbeat: GraphAnimation = {
-	label,
-
 	trigger(ctx) {
 		origin = ctx.currentNode
 			? { x: ctx.currentNode.x, y: ctx.currentNode.y }
@@ -72,7 +55,9 @@ const heartbeat: GraphAnimation = {
 		const local = elapsed - arrival;
 		if (local < 0 || local > LOCAL_MS) return { dx: 0, dy: 0 };
 
-		const push = MAX_PUSH * pulseEnvelope(local);
+		// A gentle rise, then a much slower return — a rolling swell
+		// rather than a jolt.
+		const push = MAX_PUSH * riseFall(local, PUSH_MS, RETURN_MS);
 		return { dx: (ddx / dist) * push, dy: (ddy / dist) * push };
 	},
 };

@@ -1,6 +1,8 @@
 <script lang="ts">
 	import Body from "$lib/Body.svelte";
 	import LeftSidebar from "$lib/LeftSidebar.svelte";
+	import ImageLightbox from "$lib/ImageLightbox.svelte";
+	import LinkPreview from "$lib/LinkPreview.svelte";
 	import Icon from "$lib/Icon.svelte";
 	import RightSidebar from "$lib/RightSidebar.svelte";
 	import ThemeIcon from "$lib/ThemeIcon.svelte";
@@ -8,7 +10,7 @@
 	import type { Snippet } from "svelte";
 	import { onMount, tick } from "svelte";
 	import { afterNavigate } from "$app/navigation";
-	import { page } from "$app/stores";
+	import { page } from "$app/state";
 	import "../markdown-fallback.css";
 	import "../app.css";
 	import "../markdown.css";
@@ -18,7 +20,7 @@
 
 	// User-supplied .js/.ts files (see the plugin's "Custom scripts"
 	// setting), copied in at export time by writeCustomScripts() in
-	// main.ts. Lazy (not `eager: true`) so nothing runs during SSR/
+	// siteFiles.ts. Lazy (not `eager: true`) so nothing runs during SSR/
 	// prerender — only after hydration in onMount below, where each
 	// module's default export (if a function) is called once. A relative
 	// path, not the "$lib" alias — import.meta.glob resolves patterns via
@@ -34,7 +36,12 @@
 	// light/dark toggle normally lives (in the right sidebar's header), so
 	// a standalone copy of that toggle is rendered here instead — see
 	// themeToggleButton below.
-	let onGraphPage = $derived(!!$page.data.isGraphPage);
+	let onGraphPage = $derived(!!page.data.isGraphPage);
+
+	/** Where the visitor's own color mode choice is saved. Must match
+	 * COLOR_MODE_KEY in the plugin's src/siteFiles.ts, whose script in
+	 * app.html applies it before the page is first painted. */
+	const COLOR_MODE_KEY = "svelte-exporter-color-mode";
 
 	let theme: "dark" | "light" = $state(DEFAULT_COLOR_MODE);
 
@@ -65,6 +72,11 @@
 	function toggleTheme() {
 		theme = theme === "dark" ? "light" : "dark";
 		applyTheme(theme);
+		try {
+			localStorage.setItem(COLOR_MODE_KEY, theme);
+		} catch {
+			// storage unavailable (private mode…) — the choice lasts this visit
+		}
 	}
 
 	// On mobile both sidebars are fixed-position overlays that each cover
@@ -94,6 +106,9 @@
 			"is-focused",
 			...STYLE_SETTINGS_CLASSES,
 		);
+		// app.html's script already applied the saved mode, if any.
+		if (document.body.classList.contains("theme-light")) theme = "light";
+		else if (document.body.classList.contains("theme-dark")) theme = "dark";
 		applyTheme(theme);
 
 		// Both start collapsed (see the $state default above) — open them
@@ -186,4 +201,11 @@
 			<ThemeIcon {theme} />
 		</button>
 	{/if}
+
+	<!-- Hover previews of every page's internal links — mounted once here,
+	     so the pages fetched for them stay cached across navigations. -->
+	<LinkPreview />
+
+	<!-- Full-size view of a clicked note image. -->
+	<ImageLightbox />
 </div>

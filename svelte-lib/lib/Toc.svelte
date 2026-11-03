@@ -1,14 +1,24 @@
 <script lang="ts">
-	import { tocHeadings } from "$lib/stores";
-	import { onMount } from "svelte";
+	import { page } from "$app/state";
+
+	interface TocHeading {
+		id: string;
+		text: string;
+		level: number;
+	}
 
 	let active = $state("");
+
+	// Returned by each note's +page.ts load() (see pageexporter.ts) —
+	// absent on pages that aren't notes (welcome screen, graph page).
+	const headings: TocHeading[] = $derived(page.data.headings ?? []);
 
 	function scrollTo(id: string) {
 		document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
 	}
 
-	onMount(() => {
+	// Runs after the DOM updated for the new page, so its headings exist.
+	$effect(() => {
 		const observer = new IntersectionObserver(
 			(entries) => {
 				for (const e of entries) {
@@ -20,23 +30,17 @@
 			},
 			{ rootMargin: "0px 0px -70% 0px", threshold: 0 },
 		);
-		const unsub = tocHeadings.subscribe((headings) => {
-			observer.disconnect();
-			headings.forEach((h) => {
-				const el = document.getElementById(h.id);
-				if (el) observer.observe(el);
-			});
-		});
-		return () => {
-			observer.disconnect();
-			unsub();
-		};
+		for (const h of headings) {
+			const el = document.getElementById(h.id);
+			if (el) observer.observe(el);
+		}
+		return () => observer.disconnect();
 	});
 </script>
 
-{#if $tocHeadings.length > 0}
+{#if headings.length > 0}
 	<div>
-		{#each $tocHeadings as h}
+		{#each headings as h}
 			<div class="tree-item">
 				<div
 					class="tree-item-self is-clickable"

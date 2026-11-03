@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { page } from "$app/stores";
+	import { page } from "$app/state";
 	import FileTree from "$lib/FileTree.svelte";
 	import { toRoutePath } from "$lib/routePath";
+	import SearchResults from "$lib/SearchResults.svelte";
 	import SidebarShell from "$lib/SidebarShell.svelte";
 
 	interface Props {
@@ -12,12 +13,12 @@
 
 	let query = $state("");
 
-	// $page.url.pathname is URL-encoded by the browser (spaces become
+	// page.url.pathname is URL-encoded by the browser (spaces become
 	// "%20", etc.) and includes the site's base path in production, while
 	// route/node paths are the literal, base-less folder names on disk —
 	// toRoutePath() undoes both so FileTree's active-item comparison
 	// actually matches.
-	let currentPath = $derived(toRoutePath($page.url.pathname));
+	let currentPath = $derived(toRoutePath(page.url.pathname));
 </script>
 
 <SidebarShell side="left" {collapsed} {toggleCollapsed}>
@@ -38,6 +39,7 @@
 	>
 		<div class="nav-files-container node-insert-event">
 			<FileTree {query} {currentPath} />
+			<SearchResults {query} />
 		</div>
 	</div>
 </SidebarShell>

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from "svelte";
 	import { afterNavigate } from "$app/navigation";
-	import { page } from "$app/stores";
+	import { page } from "$app/state";
 	const { children }: { children: Snippet } = $props();
 
 	let contentEl: HTMLElement;
@@ -23,10 +23,10 @@
 	>
 		<div
 			class="markdown-preview-sizer"
-			class:full-bleed={$page.data.fullBleed}
-			class:full-height={$page.data.fullHeight}
+			class:full-bleed={page.data.fullBleed}
+			class:full-height={page.data.fullHeight}
 		>
 			{@render children()}
 		</div>
 	</div>
-</div>
+</div>

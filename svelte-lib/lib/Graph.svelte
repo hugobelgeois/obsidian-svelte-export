@@ -1,19 +1,37 @@
 <script lang="ts">
 	import { goto } from "$app/navigation";
 	import { base } from "$app/paths";
-	import { page } from "$app/stores";
+	import { page } from "$app/state";
 	import { animationRegistry, randomAnimationId } from "$lib/animationRegistry";
 	import {
 		ANIMATION_INTERVAL_SECONDS,
 		ANIMATION_TYPE,
+		GRAPH_FORCES,
 		NODE_COLORS,
 	} from "$lib/exportData";
+	import {
+		DIM_TAU_MS,
+		drawGraph,
+		REVEAL_FADE_MS,
+		withNeighbors,
+		type GraphColors,
+	} from "$lib/graphDraw";
+	import { DRAG_ALPHA, ForceSimulation, seedPositions } from "$lib/graphPhysics";
 	import type { GNode } from "$lib/graphTypes";
+	import {
+		centerOn,
+		createView,
+		fitView,
+		nodeAt,
+		toWorld,
+		zoomAt,
+		type View,
+	} from "$lib/graphView";
 	import { getLinkEdges } from "$lib/linkGraph";
 	import { toRoutePath } from "$lib/routePath";
 	import Icon from "$lib/Icon.svelte";
 	import { flattenTree, siteTree } from "$lib/siteTree";
-	import { onDestroy, onMount } from "svelte";
+	import { onDestroy, onMount, untrack } from "svelte";
 
 	// "random" picks one animation id here, once, when this component is
 	// created (i.e. once per page load) — not re-rolled on every reactive
@@ -32,8 +50,10 @@
 	 * fills the page for this mode via the route's `fullBleed` load data
 	 * (see +page.ts next to the generated standalone route), not a prop
 	 * here — that data is resolved before any component renders, avoiding
-	 * the ordering issue of a child trying to signal an ancestor. */
-	let { standalone = false }: { standalone?: boolean } = $props();
+	 * the ordering issue of a child trying to signal an ancestor.
+	 * Read once: a page never switches modes after it's created. */
+	const props: { standalone?: boolean } = $props();
+	const standalone = untrack(() => props.standalone ?? false);
 
 	// ── Types ────────────────────────────────────────────────────────────────
 
@@ -42,58 +62,15 @@
 		target: string;
 	}
 
-	/** Independent pan/zoom/hover state for one canvas (sidebar vs. modal). */
-	interface View {
-		canvas: HTMLCanvasElement | null;
-		width: number;
-		height: number;
-		scale: number;
-		/** The "fit all nodes" scale, tracked even after a manual zoom moves
-		 * `scale` away from it — used as the zoom-in reference point for
-		 * degree-based label transparency. */
-		fitScale: number;
-		panX: number;
-		panY: number;
-		hoveredId: string | null;
-		dragNode: GNode | null;
-		isPanning: boolean;
-		userAdjusted: boolean;
-		lastX: number;
-		lastY: number;
-		moved: boolean;
-	}
-
-	function createView(): View {
-		return {
-			canvas: null,
-			width: 0,
-			height: 0,
-			scale: 1,
-			fitScale: 1,
-			panX: 0,
-			panY: 0,
-			hoveredId: null,
-			dragNode: null,
-			isPanning: false,
-			userAdjusted: false,
-			lastX: 0,
-			lastY: 0,
-			moved: false,
-		};
-	}
-
 	// ── Graph data (structure is static — built once) ───────────────────────
-
-	/** Logical simulation space; each view maps this to its own pixel size. */
-	const SIM_SIZE = 320;
 
 	const files = flattenTree(siteTree);
 
 	const nodes: GNode[] = files.map((f) => ({
 		id: f.path,
 		label: f.name,
-		x: Math.random() * SIM_SIZE,
-		y: Math.random() * SIM_SIZE,
+		x: 0, // placed by seedPositions() below
+		y: 0,
 		vx: 0,
 		vy: 0,
 		fx: null,
@@ -124,15 +101,11 @@
 		nodeIndex.get(l.target)!.degree++;
 	}
 
-	/** `id` itself plus every note directly linked to it (empty for null). */
-	function withNeighbors(id: string | null): Set<string> {
-		return id ? new Set([id, ...(adjacency.get(id) ?? [])]) : new Set();
-	}
-
-	/** Same size formula for every node — only depends on its link count. */
-	function baseRadius(n: GNode, scale: number): number {
-		return (3.5 + Math.min(n.degree, 6) * 0.55) / scale;
-	}
+	/** Every link, as the nodes it joins — for the physics and drawing. */
+	const edges = links.map((l) => ({
+		source: nodeIndex.get(l.source)!,
+		target: nodeIndex.get(l.target)!,
+	}));
 
 	// ── Progressive reveal (standalone page only) ───────────────────────────
 	// Order: the most-connected node first, then its neighbors (breadth-
@@ -175,248 +148,18 @@
 		25,
 		Math.min(70, 4000 / Math.max(revealOrder.length, 1)),
 	);
-	const REVEAL_FADE_MS = 320;
 	let revealCursor = 0;
 	let nextRevealAt = 0;
 
-	function revealEase(n: GNode, now: number): number {
-		if (!n.revealed) return 0;
-		if (n.revealedAt === null) return 1;
-		const t = Math.min(1, (now - n.revealedAt) / REVEAL_FADE_MS);
-		if (t >= 1) return 1;
-		return 1 - Math.pow(1 - t, 3); // ease-out cubic "pop"
-	}
-
-	// ── Periodic animation (standalone page + popup modal) ──────────────────
-	// The actual effect lives in lib/animations/ — see activeAnimation above
-	// and advanceAnimation()/drawPos() below for how it's driven and drawn.
-	// Both hooks are purely visual and never touch n.x/n.y, so there's no
-	// risk of the layout itself drifting.
-
-	/** Generic radius multiplier from the active animation's intensity —
-	 * shared by every intensity-based animation so individual animation
-	 * files don't each need their own "how big does a highlighted node get"
-	 * constant. Animations that need to shrink a node (not just grow it)
-	 * provide getSizeScale instead, which takes priority here. */
-	const INTENSITY_MAX_SCALE = 1.7;
-
-	function animationScale(n: GNode, now: number): number {
-		if (activeAnimation?.getSizeScale) {
-			return Math.max(0.05, activeAnimation.getSizeScale(n, now));
-		}
-		const t = activeAnimation?.getIntensity?.(n, now) ?? 0;
-		return 1 + (INTENSITY_MAX_SCALE - 1) * t;
-	}
-
-	// ── Hover dimming (eased, not instant) ──────────────────────────────────
-	// Frame-rate-independent exponential smoothing: after DIM_TAU_MS
-	// milliseconds, dimAlpha has closed ~63% of the gap to its target; after
-	// 3× that (~0.5–1s total, per DIM_TAU_MS below) it's visually settled.
-	const DIM_TAU_MS = 250;
+	/** Previous frame's time, for the hover dimming's easing. */
 	let lastDimFrameTime = 0;
 
-	function updateDimAlpha(n: GNode, target: number, dt: number) {
-		const k = 1 - Math.exp(-dt / DIM_TAU_MS);
-		n.dimAlpha += (target - n.dimAlpha) * k;
-	}
+	// ── Physics ──────────────────────────────────────────────────────────────
+	// Obsidian's own graph simulation, with the force settings from the
+	// vault's graph view — see lib/graphPhysics.ts.
 
-	// ── Physics (continuous, animated — settles instead of blocking once) ──
-
-	let alpha = 1;
-	/** Multiplicative decay: settling slows down gradually instead of
-	 * stopping abruptly after a fixed time — it keeps going for as long as
-	 * there's meaningful motion left (3). */
-	const ALPHA_DECAY_RATE = 0.985;
-	const ALPHA_MIN = 0.005;
-	const REPULSION = 2600;
-	const REST_LENGTH = 46;
-	const SPRING = 0.05;
-	/** Never let two nodes get closer than this for repulsion-force purposes
-	 * — without it, repulsion (∝ 1/dist²) blows up as dist→0 and a dragged
-	 * node can fling its neighbors across the screen in a single frame. */
-	const MIN_DIST = 12;
-	/** Hard minimum on-screen separation between any two nodes (2) — unlike
-	 * MIN_DIST above (which only softens the repulsion force), this is a
-	 * real position constraint, enforced every frame regardless of alpha,
-	 * so nodes never end up overlapping even once the layout has settled. */
-	const MIN_SEPARATION = 18;
-	/** Hard cap on how far a node can move in one frame, regardless of how
-	 * large the accumulated force was. */
-	const MAX_SPEED = 6;
-	/** Nodes settle inside this radius (4); dragging one out is fine, but it
-	 * springs back in once released. */
-	const BOUNDARY_R = SIM_SIZE * 0.42;
-	const BOUNDARY_PULL = 0.05;
-
-	function reheat() {
-		alpha = 1;
-	}
-
-	function step() {
-		const cx = SIM_SIZE / 2;
-		const cy = SIM_SIZE / 2;
-
-		for (let i = 0; i < nodes.length; i++) {
-			for (let j = i + 1; j < nodes.length; j++) {
-				const a = nodes[i];
-				const b = nodes[j];
-				const dx = b.x - a.x;
-				const dy = b.y - a.y;
-				const dist = Math.max(Math.sqrt(dx * dx + dy * dy), MIN_DIST);
-				const force = (REPULSION * alpha) / (dist * dist);
-				const fx = (force * dx) / dist;
-				const fy = (force * dy) / dist;
-				if (a.fx === null) {
-					a.vx -= fx;
-					a.vy -= fy;
-				}
-				if (b.fx === null) {
-					b.vx += fx;
-					b.vy += fy;
-				}
-			}
-		}
-
-		for (const l of links) {
-			const s = nodeIndex.get(l.source);
-			const t = nodeIndex.get(l.target);
-			if (!s || !t) continue;
-			const dx = t.x - s.x;
-			const dy = t.y - s.y;
-			const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-			const force = (dist - REST_LENGTH) * SPRING * alpha;
-			const fx = (force * dx) / dist;
-			const fy = (force * dy) / dist;
-			if (s.fx === null) {
-				s.vx += fx;
-				s.vy += fy;
-			}
-			if (t.fx === null) {
-				t.vx -= fx;
-				t.vy -= fy;
-			}
-		}
-
-		// (1): the current note and its direct neighbors get an extra pull
-		// toward the center, on top of the degree-based one below, so they
-		// stay as close to the middle as possible regardless of how many
-		// links they otherwise have.
-		const focusIds = withNeighbors(currentPath);
-
-		for (const n of nodes) {
-			if (n.fx !== null && n.fy !== null) {
-				n.x = n.fx;
-				n.y = n.fy;
-				n.vx = 0;
-				n.vy = 0;
-				continue;
-			}
-
-			// (4): the more a note is linked, the more strongly it's pulled
-			// toward the center — so well-connected hubs keep the middle of
-			// the graph filled instead of everything spreading into a
-			// hollow ring around an empty center.
-			const degreeFactor = 1 + Math.min(n.degree, 10) * 0.35;
-			const focusFactor = focusIds.has(n.id) ? 2.2 : 1;
-			n.vx += (cx - n.x) * 0.006 * alpha * degreeFactor * focusFactor;
-			n.vy += (cy - n.y) * 0.006 * alpha * degreeFactor * focusFactor;
-
-			// Elastic circular boundary (4): only pushes back once a node
-			// drifts past BOUNDARY_R, gently, proportional to the overshoot.
-			const ddx = n.x - cx;
-			const ddy = n.y - cy;
-			const distFromCenter = Math.sqrt(ddx * ddx + ddy * ddy) || 1;
-			if (distFromCenter > BOUNDARY_R) {
-				const excess = distFromCenter - BOUNDARY_R;
-				const pull = excess * BOUNDARY_PULL;
-				n.vx -= (ddx / distFromCenter) * pull;
-				n.vy -= (ddy / distFromCenter) * pull;
-			}
-
-			// Cap speed so one big force spike can never fling a node across
-			// the screen in a single frame (3).
-			const speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
-			if (speed > MAX_SPEED) {
-				n.vx = (n.vx / speed) * MAX_SPEED;
-				n.vy = (n.vy / speed) * MAX_SPEED;
-			}
-
-			n.x += n.vx * 0.6;
-			n.y += n.vy * 0.6;
-			n.vx *= 0.82;
-			n.vy *= 0.82;
-		}
-
-		// Settling slows down but never hard-stops — it keeps contributing
-		// a small amount of motion for as long as nodes are still adjusting.
-		alpha = Math.max(alpha * ALPHA_DECAY_RATE, ALPHA_MIN);
-	}
-
-	/**
-	 * Hard minimum-separation constraint (2), enforced every frame
-	 * regardless of alpha/settling state or dragging — directly nudges
-	 * apart any two nodes closer than MIN_SEPARATION so they never
-	 * overlap, even after the layout has fully settled.
-	 */
-	function enforceSeparation() {
-		for (let i = 0; i < nodes.length; i++) {
-			for (let j = i + 1; j < nodes.length; j++) {
-				const a = nodes[i];
-				const b = nodes[j];
-				const dx = b.x - a.x;
-				const dy = b.y - a.y;
-				let dist = Math.sqrt(dx * dx + dy * dy);
-				if (dist >= MIN_SEPARATION) continue;
-				if (dist < 0.001) dist = 0.001;
-				const overlap = (MIN_SEPARATION - dist) / 2;
-				const nx = dx / dist;
-				const ny = dy / dist;
-				const aFixed = a.fx !== null;
-				const bFixed = b.fx !== null;
-				if (!aFixed && !bFixed) {
-					a.x -= nx * overlap;
-					a.y -= ny * overlap;
-					b.x += nx * overlap;
-					b.y += ny * overlap;
-				} else if (!aFixed) {
-					a.x -= nx * overlap * 2;
-					a.y -= ny * overlap * 2;
-				} else if (!bFixed) {
-					b.x += nx * overlap * 2;
-					b.y += ny * overlap * 2;
-				}
-			}
-		}
-	}
-
-	/**
-	 * Smooth, local-only push away from an actively dragged node — this is
-	 * what makes nearby nodes drift out of the way while dragging, without
-	 * relying on reheat()'s global alpha (which would reactivate forces for
-	 * every pair in the graph, not just around the drag). Unlike
-	 * enforceSeparation()'s hard MIN_SEPARATION cutoff (nothing, then a
-	 * sudden snap at an exact radius), this fades continuously to zero — no
-	 * boundary to see. Added to velocity, not position, so the normal
-	 * damping in step() carries it into an organic decelerate-and-settle
-	 * instead of an instant nudge.
-	 */
-	const DRAG_PUSH_RADIUS = 27; // sim-units — well past this, effectively zero
-	const DRAG_PUSH_STRENGTH = 3.5;
-
-	function applyDragRepulsion(dragNode: GNode) {
-		for (const n of nodes) {
-			if (n === dragNode || n.fx !== null) continue;
-			const dx = n.x - dragNode.x;
-			const dy = n.y - dragNode.y;
-			const dist = Math.sqrt(dx * dx + dy * dy);
-			if (dist >= DRAG_PUSH_RADIUS || dist < 0.001) continue;
-			const t = dist / DRAG_PUSH_RADIUS;
-			const falloff = (1 - t) * (1 - t); // 0 at the radius edge, and flat there (no snap)
-			const force = DRAG_PUSH_STRENGTH * falloff;
-			n.vx += (dx / dist) * force;
-			n.vy += (dy / dist) * force;
-		}
-	}
+	const sim = new ForceSimulation(nodes, edges, GRAPH_FORCES);
+	seedPositions(nodes, (id) => adjacency.get(id) ?? [], nodeIndex);
 
 	// ── Views & shared display state ─────────────────────────────────────────
 
@@ -427,318 +170,86 @@
 	/** Shared between the sidebar preview and the expanded modal. */
 	let showOnlyLinked = $state(false);
 
-	let sidebarWrapEl: HTMLDivElement;
-	let sidebarCanvasEl: HTMLCanvasElement;
+	let sidebarWrapEl: HTMLDivElement | undefined = $state();
+	let sidebarCanvasEl: HTMLCanvasElement | undefined = $state();
 	let modalWrapEl: HTMLDivElement;
 	let modalCanvasEl: HTMLCanvasElement;
 
 	let currentPath = "";
-
-	/** Actual bounding box of every node's current position. */
-	function computeBounds() {
-		let minX = Infinity,
-			minY = Infinity,
-			maxX = -Infinity,
-			maxY = -Infinity;
-		for (const n of nodes) {
-			if (n.x < minX) minX = n.x;
-			if (n.x > maxX) maxX = n.x;
-			if (n.y < minY) minY = n.y;
-			if (n.y > maxY) maxY = n.y;
-		}
-		if (!isFinite(minX)) {
-			minX = 0;
-			minY = 0;
-			maxX = SIM_SIZE;
-			maxY = SIM_SIZE;
-		}
-		return { minX, minY, maxX, maxY };
-	}
-
-	/**
-	 * Fit the view so every node is visible (3), based on their real
-	 * bounding box rather than an assumed fixed area — physics can push
-	 * nodes beyond the nominal SIM_SIZE square, so fitting to SIM_SIZE
-	 * alone could clip some of them.
-	 */
-	function fitView(view: View, force = false) {
-		if (view.width <= 0 || view.height <= 0) return;
-		const { minX, minY, maxX, maxY } = computeBounds();
-		const w = Math.max(maxX - minX, 1);
-		const h = Math.max(maxY - minY, 1);
-		const margin = 28;
-		const idealScale = Math.max(
-			Math.min(
-				Math.min(
-					(view.width - margin * 2) / w,
-					(view.height - margin * 2) / h,
-				),
-				3,
-			),
-			0.05,
-		);
-		view.fitScale = idealScale;
-
-		if (view.userAdjusted && !force) return;
-		view.scale = idealScale;
-		const cx = (minX + maxX) / 2;
-		const cy = (minY + maxY) / 2;
-		view.panX = view.width / 2 - cx * view.scale;
-		view.panY = view.height / 2 - cy * view.scale;
-	}
+	/** Current note + its direct links — recomputed on navigation only. */
+	let currentNeighbors = new Set<string>();
 
 	/** Recenter (pan only, keep current zoom level) on the current note. */
 	function centerOnCurrent(view: View) {
-		const n = currentPath ? nodeIndex.get(currentPath) : null;
-		if (!n || view.width <= 0 || view.height <= 0) return;
-		view.panX = view.width / 2 - n.x * view.scale;
-		view.panY = view.height / 2 - n.y * view.scale;
+		centerOn(view, currentPath ? nodeIndex.get(currentPath) : null);
 	}
 
-	/** Fully restart the layout from scratch — scattered positions, hot
+	/** Fully restart the layout from scratch — freshly placed nodes, hot
 	 * physics, no leftover velocity or drag state. */
 	function resetPhysics() {
-		for (const n of nodes) {
-			n.x = Math.random() * SIM_SIZE;
-			n.y = Math.random() * SIM_SIZE;
-			n.vx = 0;
-			n.vy = 0;
-			n.fx = null;
-			n.fy = null;
-		}
-		reheat();
+		seedPositions(nodes, (id) => adjacency.get(id) ?? [], nodeIndex);
+		sim.alpha = 1;
+		sim.alphaTarget = 0;
+		wake();
 	}
 
 	function toggleFilter() {
 		showOnlyLinked = !showOnlyLinked;
-		// Entirely reset the display, zoom, and physics — not just reheat —
+		// Entirely reset the display, zoom, and physics — not just warm it up —
 		// so switching between "all notes" and "only linked" always starts
 		// from a clean slate instead of continuing the previous layout.
 		resetPhysics();
 		sidebarView.userAdjusted = false;
 		modalView.userAdjusted = false;
-		fitView(sidebarView, true);
-		if (expanded) fitView(modalView, true);
+		fitView(sidebarView, nodes, true);
+		if (expanded) fitView(modalView, nodes, true);
 	}
 
 	// ── Rendering ────────────────────────────────────────────────────────────
 
+	/** Theme colors, read once and cached: getComputedStyle every frame is
+	 * costly. Cleared by the <body> class observer in onMount — that's where
+	 * the light/dark toggle (theme-dark/theme-light) lands. */
+	let colors: GraphColors | null = null;
+
+	function getColors(): GraphColors {
+		if (!colors) {
+			const style = getComputedStyle(document.body);
+			const read = (name: string, fallback: string) =>
+				style.getPropertyValue(name).trim() || fallback;
+			colors = {
+				colorEdge: read("--text-faint", "#666"),
+				colorNode: read("--text-muted", "#888"),
+				colorActive: read("--interactive-accent", "#7b6cd9"),
+				colorLabel: read("--text-normal", "#ddd"),
+				colorBg: read("--background-primary", "#1a1a1a"),
+			};
+		}
+		return colors;
+	}
+
+	/** Draws one frame of `view` — see drawGraph() in graphDraw.ts. */
 	function draw(view: View, isModal: boolean, now: number) {
-		if (!view.canvas || view.width <= 0 || view.height <= 0) return;
-		const ctx = view.canvas.getContext("2d");
-		if (!ctx) return;
-
-		// The animation's positional offset is a big-view-only effect
-		// (standalone page + popup modal, never the small sidebar preview)
-		// and purely visual — it never touches n.x/n.y, so this is the only
-		// place it exists.
-		function drawPos(n: GNode): { x: number; y: number } {
-			if (!isModal) return { x: n.x, y: n.y };
-			const off = activeAnimation?.getOffset?.(n, now);
-			if (!off) return { x: n.x, y: n.y };
-			return { x: n.x + off.dx, y: n.y + off.dy };
-		}
-
-		const dpr = window.devicePixelRatio || 1;
-		const targetW = Math.round(view.width * dpr);
-		const targetH = Math.round(view.height * dpr);
-		if (view.canvas.width !== targetW || view.canvas.height !== targetH) {
-			view.canvas.width = targetW;
-			view.canvas.height = targetH;
-		}
-
-		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-		ctx.clearRect(0, 0, view.width, view.height);
-		ctx.save();
-		ctx.translate(view.panX, view.panY);
-		ctx.scale(view.scale, view.scale);
-
-		const style = getComputedStyle(document.body);
-		const colorEdge =
-			style.getPropertyValue("--text-faint").trim() || "#666";
-		const colorNode =
-			style.getPropertyValue("--text-muted").trim() || "#888";
-		const colorActive =
-			style.getPropertyValue("--interactive-accent").trim() || "#7b6cd9";
-		const colorLabel =
-			style.getPropertyValue("--text-normal").trim() || "#ddd";
-		const colorBg =
-			style.getPropertyValue("--background-primary").trim() || "#1a1a1a";
-
 		const dimDt = lastDimFrameTime > 0 ? now - lastDimFrameTime : 16;
 		lastDimFrameTime = now;
-
-		const neighborIds = withNeighbors(currentPath);
-		// Filter (2): restrict to current note + its direct neighbors.
-		const visibleIds = showOnlyLinked ? neighborIds : null;
-
-		const hovered = view.hoveredId ? nodeIndex.get(view.hoveredId) : null;
-		const linkedToHovered = withNeighbors(hovered?.id ?? null);
-
-		// Label mode: in the big view with "all notes" shown, every note's
-		// name visibility depends on how many links it has (more links =
-		// more visible at the default zoom, zero links = invisible), and
-		// zooming in gradually reveals everyone regardless of link count.
-		// Otherwise: just current + hovered, plus direct neighbors too when
-		// the big view is filtered down to them.
-		const degreeFade = isModal && !showOnlyLinked;
-		const zoomRatio = view.fitScale > 0 ? view.scale / view.fitScale : 1;
-		// 0 once at (or below) the default fit scale, growing as you zoom in.
-		const zoomBoost = Math.max(0, zoomRatio - 1) * 0.5;
-
-		const labelIds = new Set<string>();
-		if (!degreeFade) {
-			for (const n of nodes) {
-				if (visibleIds && !visibleIds.has(n.id)) continue;
-				const isCurrent = n.id === currentPath;
-				const isHovered = n.id === view.hoveredId;
-				const isNearCurrent = isModal && neighborIds.has(n.id);
-				if (isCurrent || isHovered || isNearCurrent) labelIds.add(n.id);
-			}
-		}
-		// The more names would be drawn at once, the more transparent each
-		// one is, so a heavily-connected note's neighbor labels don't turn
-		// into an unreadable block of overlapping text — but never so
-		// transparent they stop being "permanently visible".
-		const labelAlpha = Math.max(
-			0.55,
-			Math.min(1, 10 / Math.max(labelIds.size, 1)),
+		drawGraph(
+			view,
+			{
+				nodes,
+				edges,
+				nodeIndex,
+				adjacency,
+				currentPath,
+				currentNeighbors,
+				showOnlyLinked,
+				animation: activeAnimation,
+				nodeColors: NODE_COLORS,
+				colors: getColors(),
+			},
+			isModal,
+			now,
+			dimDt,
 		);
-
-		/** Returns null when this node shouldn't get a label at all. */
-		function getLabelAlpha(n: GNode): number | null {
-			// The node under the cursor always gets its full name at full
-			// opacity — degree-based fade and the "many labels at once"
-			// dimming are both about decluttering everything else, not this.
-			if (n.id === view.hoveredId) return 1;
-			if (degreeFade) {
-				const degreeComponent = Math.min(n.degree, 8) / 8; // 0..1
-				const a = Math.min(1, degreeComponent * 0.85 + zoomBoost);
-				return a <= 0.03 ? null : a;
-			}
-			return labelIds.has(n.id) ? labelAlpha : null;
-		}
-
-		// Edges — (1) always visible: a solid base opacity that never fades
-		// toward nothing, only brightened further when connected to the
-		// hovered note.
-		for (const l of links) {
-			const s = nodeIndex.get(l.source);
-			const t = nodeIndex.get(l.target);
-			if (!s || !t) continue;
-			if (!s.revealed || !t.revealed) continue;
-			if (visibleIds && !(visibleIds.has(s.id) && visibleIds.has(t.id)))
-				continue;
-			const isHighlighted =
-				!!hovered && (s.id === hovered.id || t.id === hovered.id);
-			ctx.strokeStyle = isHighlighted ? colorActive : colorEdge;
-			ctx.globalAlpha = isHighlighted ? 1 : 0.65;
-			ctx.lineWidth = (isHighlighted ? 1.8 : 1.1) / view.scale;
-			const sp = drawPos(s);
-			const tp = drawPos(t);
-			ctx.beginPath();
-			ctx.moveTo(sp.x, sp.y);
-			ctx.lineTo(tp.x, tp.y);
-			ctx.stroke();
-		}
-
-		// Nodes — draw the current note LAST (in its own pass) so it always
-		// sits on top of everything else, with a halo — but sized the same
-		// as everyone else, purely by degree (not because it's "the" note).
-		let currentNode: GNode | null = null;
-		for (const n of nodes) {
-			if (!n.revealed) continue;
-			if (visibleIds && !visibleIds.has(n.id)) continue;
-			const isCurrent = n.id === currentPath;
-			if (isCurrent) {
-				currentNode = n;
-				continue;
-			}
-			const isHovered = n.id === view.hoveredId;
-			const dimmed = !!hovered && !linkedToHovered.has(n.id);
-			updateDimAlpha(n, dimmed ? 0.35 : 1, dimDt);
-			const ease = revealEase(n, now);
-			const baseR = baseRadius(n, view.scale);
-			const intensity = activeAnimation?.getIntensity?.(n, now) ?? 0;
-			const r = baseR * ease * animationScale(n, now);
-			const p = drawPos(n);
-
-			if (intensity > 0.01) {
-				// Soft glow behind the node, same treatment as the "current
-				// note" halo below — this is what an intensity-based
-				// animation (e.g. flicker) reads as a "twinkle".
-				ctx.globalAlpha = intensity * 0.5 * ease;
-				ctx.beginPath();
-				ctx.arc(p.x, p.y, baseR * 2.2, 0, Math.PI * 2);
-				ctx.fillStyle = colorActive;
-				ctx.fill();
-			}
-
-			// Obsidian's own graph "Groups" color — big-view-only (matches
-			// how the graph's own periodic animations are scoped), never
-			// applied to the small sidebar preview.
-			const groupColor = isModal ? NODE_COLORS[n.id] : undefined;
-
-			ctx.globalAlpha = n.dimAlpha * ease;
-			ctx.beginPath();
-			ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-			ctx.fillStyle = isHovered ? colorLabel : (groupColor ?? colorNode);
-			ctx.fill();
-
-			if (isHovered) {
-				ctx.lineWidth = 2 / view.scale;
-				ctx.strokeStyle = colorBg;
-				ctx.stroke();
-			}
-
-			const labelA = getLabelAlpha(n);
-			if (labelA !== null) {
-				ctx.globalAlpha = Math.min(labelA, n.dimAlpha) * ease;
-				ctx.font = `${11 / view.scale}px system-ui, sans-serif`;
-				ctx.fillStyle = colorLabel;
-				ctx.fillText(n.label, p.x + r + 4 / view.scale, p.y + 4 / view.scale);
-			}
-		}
-
-		if (
-			currentNode?.revealed &&
-			(!visibleIds || visibleIds.has(currentNode.id))
-		) {
-			const ease = revealEase(currentNode, now);
-			// Same size formula as every other node — only the color and
-			// halo mark it as "you are here", not an oversized radius.
-			const r =
-				baseRadius(currentNode, view.scale) *
-				ease *
-				animationScale(currentNode, now);
-			const p = drawPos(currentNode);
-			// Halo: soft glow behind the node so it reads as "the" focal point.
-			ctx.globalAlpha = 0.28 * ease;
-			ctx.beginPath();
-			ctx.arc(p.x, p.y, r * 2.2, 0, Math.PI * 2);
-			ctx.fillStyle = colorActive;
-			ctx.fill();
-
-			ctx.globalAlpha = ease;
-			ctx.beginPath();
-			ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-			ctx.fillStyle = colorActive;
-			ctx.fill();
-			ctx.lineWidth = 2.5 / view.scale;
-			ctx.strokeStyle = colorBg;
-			ctx.stroke();
-
-			ctx.font = `bold ${12 / view.scale}px system-ui, sans-serif`;
-			ctx.fillStyle = colorLabel;
-			ctx.fillText(
-				currentNode.label,
-				p.x + r + 5 / view.scale,
-				p.y + 4.5 / view.scale,
-			);
-		}
-
-		ctx.globalAlpha = 1;
-		ctx.restore();
 	}
 
 	// ── Animation loop ───────────────────────────────────────────────────────
@@ -788,34 +299,47 @@
 			now,
 			nodes,
 			currentNode: !standalone ? (current ?? null) : null,
-			standalone,
-			simCenter: { x: SIM_SIZE / 2, y: SIM_SIZE / 2 },
+			simCenter: { x: 0, y: 0 },
 		});
 		nextAnimationAt = now + intervalMs;
 	}
 
+	// The frame loop only runs while something on screen can change: the
+	// simulation running, a drag, a hover fade, the progressive reveal, or a
+	// periodic animation in the big view. Otherwise it sleeps, and anything
+	// that changes what's drawn calls wake().
+
 	let rafId = 0;
+	let destroyed = false;
+	/** Keep drawing until this time (performance.now()) at least. */
+	let redrawUntil = 0;
+
+	/** Schedules a frame (if none is pending) and keeps frames coming for
+	 * `ms` more milliseconds — e.g. long enough for a hover fade to finish. */
+	function wake(ms = 0) {
+		redrawUntil = Math.max(redrawUntil, performance.now() + ms);
+		if (!rafId && !destroyed) rafId = requestAnimationFrame(tick);
+	}
+
+	/** Covers a full hover dim/undim fade (~3 × DIM_TAU_MS). */
+	const HOVER_FADE_MS = DIM_TAU_MS * 4;
+
 	function tick() {
+		rafId = 0;
+		const now = performance.now();
+		const dragging = !!(sidebarView.dragNode || modalView.dragNode);
+		const bigViewActive = standalone || expanded;
 		try {
-			// Local, alpha-independent nudge for whichever node is actively
-			// being dragged — see applyDragRepulsion's own comment for why
-			// this isn't just reheat().
-			if (sidebarView.dragNode) applyDragRepulsion(sidebarView.dragNode);
-			if (modalView.dragNode) applyDragRepulsion(modalView.dragNode);
+			// Stops by itself once alpha has decayed (~5s after the last
+			// disturbance), exactly like Obsidian's.
+			sim.tick();
 
-			// Always run: alpha has a small floor (never hits exactly 0) and
-			// the minimum-separation constraint must hold permanently, not
-			// just while "settling" — see (2) and (3).
-			step();
-			enforceSeparation();
-
-			const stillMoving = alpha > 0.02;
-			const now = performance.now();
+			const stillMoving = sim.alpha > 0.02;
 			advanceReveal(now);
 
 			if (standalone) {
 				// Full-page mode: only the big view exists, always active.
-				if (stillMoving && !modalView.dragNode) fitView(modalView);
+				if (stillMoving && !modalView.dragNode) fitView(modalView, nodes);
 				advanceAnimation(now, true);
 				draw(modalView, true, now);
 			} else {
@@ -824,10 +348,10 @@
 				// but never while that view's own drag is in progress, or
 				// dragging a node out of frame would resize/pan the window (2).
 				if (!expanded && stillMoving && !sidebarView.dragNode) {
-					fitView(sidebarView);
+					fitView(sidebarView, nodes);
 				}
 				if (expanded && stillMoving && !modalView.dragNode) {
-					fitView(modalView);
+					fitView(modalView, nodes);
 				}
 				advanceAnimation(now, expanded);
 				// The small preview is disabled while the big view is open —
@@ -842,35 +366,24 @@
 			// scheduling the next frame regardless.
 			console.error("[Graph view] render error:", err);
 		}
-		rafId = requestAnimationFrame(tick);
-	}
 
-	// ── Coordinate helpers ───────────────────────────────────────────────────
-
-	function toWorld(view: View, clientX: number, clientY: number) {
-		const rect = view.canvas!.getBoundingClientRect();
-		const sx = clientX - rect.left;
-		const sy = clientY - rect.top;
-		return {
-			x: (sx - view.panX) / view.scale,
-			y: (sy - view.panY) / view.scale,
-		};
-	}
-
-	function nodeAt(view: View, wx: number, wy: number): GNode | null {
-		const hitR = 10 / view.scale;
-		let best: GNode | null = null;
-		let bestDist = hitR;
-		for (const n of nodes) {
-			const dx = n.x - wx;
-			const dy = n.y - wy;
-			const d = Math.sqrt(dx * dx + dy * dy);
-			if (d < bestDist) {
-				best = n;
-				bestDist = d;
-			}
+		const revealing =
+			standalone &&
+			(revealCursor < revealOrder.length ||
+				now < nextRevealAt + REVEAL_FADE_MS);
+		// A periodic animation is time-driven (it moves/glows nodes between
+		// triggers), so the big view keeps drawing every frame while one is
+		// selected — exactly as before this loop learned to sleep.
+		const animating = bigViewActive && !!activeAnimation;
+		if (
+			sim.running ||
+			dragging ||
+			revealing ||
+			animating ||
+			now < redrawUntil
+		) {
+			wake();
 		}
-		return best;
 	}
 
 	// ── Pointer interactions ─────────────────────────────────────────────────
@@ -879,7 +392,7 @@
 
 	function handlePointerDown(view: View, canPan: boolean, e: PointerEvent) {
 		const { x, y } = toWorld(view, e.clientX, e.clientY);
-		const hit = nodeAt(view, x, y);
+		const hit = nodeAt(view, nodes, x, y);
 		view.moved = false;
 		view.lastX = e.clientX;
 		view.lastY = e.clientY;
@@ -893,6 +406,7 @@
 			return;
 		}
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		wake();
 	}
 
 	function handlePointerMove(view: View, canPan: boolean, e: PointerEvent) {
@@ -904,23 +418,24 @@
 			view.moved = true;
 		}
 
-		// No reheat() while dragging on purpose: that would ramp alpha back
-		// up and reactivate repulsion/spring/center forces for every pair in
-		// the graph — a global reshuffle instead of a local one.
-		// enforceSeparation() and applyDragRepulsion() (every frame, in
-		// tick()) already push nearby nodes out of the way.
 		if (view.dragNode) {
+			// Like Obsidian: the simulation stays warm for as long as a
+			// node is being dragged, so the rest of the graph follows it.
 			const { x, y } = toWorld(view, e.clientX, e.clientY);
 			view.dragNode.fx = x;
 			view.dragNode.fy = y;
+			sim.heat(DRAG_ALPHA);
+			sim.alphaTarget = DRAG_ALPHA;
+			wake();
 		} else if (view.isPanning) {
 			view.panX += dx;
 			view.panY += dy;
 			view.userAdjusted = true;
+			wake();
 		} else {
 			const { x, y } = toWorld(view, e.clientX, e.clientY);
-			const hit = nodeAt(view, x, y);
-			view.hoveredId = hit ? hit.id : null;
+			const hit = nodeAt(view, nodes, x, y);
+			setHovered(view, hit ? hit.id : null);
 			view.canvas!.style.cursor = hit
 				? "pointer"
 				: canPan
@@ -935,8 +450,17 @@
 			view.dragNode.fx = null;
 			view.dragNode.fy = null;
 			view.dragNode = null;
+			// Released: let the simulation cool down and settle again.
+			sim.alphaTarget = 0;
+			wake();
 		}
 		view.isPanning = false;
+	}
+
+	function setHovered(view: View, id: string | null) {
+		if (view.hoveredId === id) return;
+		view.hoveredId = id;
+		wake(HOVER_FADE_MS);
 	}
 
 	/**
@@ -950,32 +474,13 @@
 		// needs the real site base prepended, same as any other href.
 		goto(base + id);
 		showOnlyLinked = true;
-	}
-
-	/** Zoom `view` at a screen point, keeping that point fixed under the cursor. */
-	function zoomAt(
-		view: View,
-		clientX: number,
-		clientY: number,
-		deltaY: number,
-	) {
-		if (!view.canvas) return;
-		const rect = view.canvas.getBoundingClientRect();
-		const cx = clientX - rect.left;
-		const cy = clientY - rect.top;
-		const zoomFactor = Math.exp(-deltaY * 0.001);
-		const newScale = Math.min(Math.max(view.scale * zoomFactor, 0.05), 5);
-		const wx = (cx - view.panX) / view.scale;
-		const wy = (cy - view.panY) / view.scale;
-		view.scale = newScale;
-		view.panX = cx - wx * newScale;
-		view.panY = cy - wy * newScale;
-		view.userAdjusted = true;
+		wake();
 	}
 
 	function handleWheel(view: View, e: WheelEvent) {
 		e.preventDefault();
 		zoomAt(view, e.clientX, e.clientY, e.deltaY);
+		wake();
 	}
 
 	function openModal() {
@@ -990,45 +495,62 @@
 
 	// ── Lifecycle ────────────────────────────────────────────────────────────
 
-	let unsubscribePage: () => void;
 	let sidebarResizeObserver: ResizeObserver;
+	let themeObserver: MutationObserver;
 
-	onMount(() => {
-		unsubscribePage = page.subscribe((p) => {
-			// $page.url.pathname is URL-encoded by the browser (spaces become
-			// "%20", accented/special chars may be encoded too) and includes
-			// the site's base path in production, but node ids are the
-			// literal, base-less characters straight from the folder names
-			// on disk — toRoutePath() undoes both. Without it, a route like
-			// "Sessions du Masque" would never match "Sessions%20du%20Masque"
-			// (or, deployed under a subpath, nothing would ever match at
-			// all), breaking every current-note-dependent feature
-			// (highlight, neighbor labels, the "only linked" filter).
-			currentPath = toRoutePath(p.url.pathname);
-			// (1) Reload the physics and recenter on the note we just
-			// navigated to — whether that came from clicking a node in the
-			// graph or any other kind of navigation.
-			reheat();
+	$effect(() => {
+		// page.url.pathname is URL-encoded by the browser (spaces become
+		// "%20", accented/special chars may be encoded too) and includes
+		// the site's base path in production, but node ids are the
+		// literal, base-less characters straight from the folder names
+		// on disk — toRoutePath() undoes both. Without it, a route like
+		// "Sessions du Masque" would never match "Sessions%20du%20Masque"
+		// (or, deployed under a subpath, nothing would ever match at
+		// all), breaking every current-note-dependent feature
+		// (highlight, neighbor labels, the "only linked" filter).
+		const path = toRoutePath(page.url.pathname);
+		untrack(() => {
+			currentPath = path;
+			currentNeighbors = withNeighbors(adjacency, currentPath);
+			// (1) Recenter on the note we just navigated to — whether that
+			// came from clicking a node in the graph or any other kind of
+			// navigation.
 			if (!standalone) centerOnCurrent(sidebarView);
 			centerOnCurrent(modalView);
+			wake();
 		});
+	});
 
-		if (!standalone) {
+	onMount(() => {
+		if (!standalone && sidebarWrapEl && sidebarCanvasEl) {
+			const wrap = sidebarWrapEl;
 			sidebarView.canvas = sidebarCanvasEl;
 			sidebarResizeObserver = new ResizeObserver(() => {
-				sidebarView.width = sidebarWrapEl.clientWidth;
-				sidebarView.height = sidebarWrapEl.clientHeight;
-				fitView(sidebarView); // respects a manual zoom, if any (2)
+				sidebarView.width = wrap.clientWidth;
+				sidebarView.height = wrap.clientHeight;
+				fitView(sidebarView, nodes); // respects a manual zoom, if any (2)
+				wake();
 			});
-			sidebarResizeObserver.observe(sidebarWrapEl);
+			sidebarResizeObserver.observe(wrap);
 		}
 
-		rafId = requestAnimationFrame(tick);
+		// Theme toggles land on <body>'s classes — re-read the colors then.
+		themeObserver = new MutationObserver(() => {
+			colors = null;
+			wake();
+		});
+		themeObserver.observe(document.body, {
+			attributes: true,
+			attributeFilter: ["class"],
+		});
+
+		wake();
 	});
 
 	onDestroy(() => {
-		unsubscribePage?.();
+		destroyed = true;
 		sidebarResizeObserver?.disconnect();
+		themeObserver?.disconnect();
 		if (rafId) cancelAnimationFrame(rafId);
 	});
 
@@ -1037,13 +559,16 @@
 	// this component is being used in standalone (full-page) mode.
 	$effect(() => {
 		const active = standalone || expanded;
+		// Opening/closing the popup swaps which canvas is drawn.
+		wake();
 		if (!active || !modalWrapEl || !modalCanvasEl) return;
 		modalView.canvas = modalCanvasEl;
 		modalView.userAdjusted = false;
 		const ro = new ResizeObserver(() => {
 			modalView.width = modalWrapEl.clientWidth;
 			modalView.height = modalWrapEl.clientHeight;
-			fitView(modalView);
+			fitView(modalView, nodes);
+			wake();
 		});
 		ro.observe(modalWrapEl);
 		return () => ro.disconnect();
@@ -1130,16 +655,21 @@
 				onpointerdown={(e) => handlePointerDown(sidebarView, false, e)}
 				onpointermove={(e) => handlePointerMove(sidebarView, false, e)}
 				onpointerup={() => handlePointerUp(sidebarView)}
-				onpointerleave={() => (sidebarView.hoveredId = null)}
+				onpointerleave={() => setHovered(sidebarView, null)}
 				onwheel={(e) => handleWheel(sidebarView, e)}
 			></canvas>
 		</div>
 	</div>
 
 	{#if expanded}
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="graph-modal-backdrop" onclick={closeModal}>
-			<div class="graph-modal" onclick={(e) => e.stopPropagation()}>
+		<!-- Clicking the backdrop (outside the dialog) closes it; Escape and
+		     the close button are the keyboard equivalents. -->
+		<div
+			class="graph-modal-backdrop"
+			role="presentation"
+			onclick={(e) => e.target === e.currentTarget && closeModal()}
+		>
+			<div class="graph-modal" role="dialog" aria-modal="true" aria-label="Graph view">
 				<div class="graph-modal-header">
 					<span class="graph-modal-title">Graph view</span>
 					<div class="graph-modal-actions">

@@ -1,9 +1,11 @@
 // Data files written next to this module by the plugin at export time (see
-// runExport() in the plugin's src/main.ts). import.meta.glob instead of
+// writeSiteData() in the plugin's src/siteFiles.ts). import.meta.glob instead of
 // static `import ... from "./x.json"`: a static import fails the whole Vite
 // build if the file doesn't exist yet (e.g. right after updating the
 // plugin's svelte-lib files but before the very first export has run) —
 // the glob form simply leaves it out, and the fallback below applies.
+import type { GraphForces } from "./graphPhysics";
+
 const modules = import.meta.glob("./*.json", { eager: true }) as Record<
 	string,
 	{ default?: unknown }
@@ -13,7 +15,10 @@ function load<T>(name: string, fallback: T): T {
 	return (modules[`./${name}`]?.default as T | undefined) ?? fallback;
 }
 
-const graphConfig = load<{ animationType?: string }>("graphConfig.json", {});
+const graphConfig = load<{
+	animationType?: string;
+	forces?: Partial<GraphForces>;
+}>("graphConfig.json", {});
 const themeConfig = load<{ defaultColorMode?: string }>("themeConfig.json", {});
 
 /** Which periodic animation plays in the graph view's big view (standalone
@@ -22,12 +27,22 @@ const themeConfig = load<{ defaultColorMode?: string }>("themeConfig.json", {});
  * lib/animations/ (see lib/animationRegistry.ts). */
 export const ANIMATION_TYPE: string = graphConfig.animationType ?? "none";
 
+/** The vault's graph view "Forces" settings, as Obsidian's simulation
+ * receives them — Obsidian's defaults when not exported yet. */
+export const GRAPH_FORCES: GraphForces = {
+	centerStrength: 0.1,
+	repelStrength: 1000,
+	linkStrength: 1,
+	linkDistance: 250,
+	...graphConfig.forces,
+};
+
 /** Seconds between graph-view animation cycles, unless an animation sets
  * its own intervalSeconds. Fixed here, not user-configurable. */
 export const ANIMATION_INTERVAL_SECONDS = 5;
 
 /** Which color mode the exported site starts in on first load. A visitor's
- * own toggle still overrides this for the rest of their visit. */
+ * own toggle overrides it, and is remembered (see +layout.svelte). */
 export const DEFAULT_COLOR_MODE: "dark" | "light" =
 	themeConfig.defaultColorMode === "light" ? "light" : "dark";
 

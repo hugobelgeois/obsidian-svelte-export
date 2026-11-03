@@ -1,3 +1,4 @@
+import { riseFall } from "../easing";
 import type { GNode } from "../graphTypes";
 import type { GraphAnimation } from "./types";
 
@@ -17,12 +18,6 @@ const DURATION_MAX_MS = 950;
 const PEAK_MIN = 0.4; // smallest random peak size (fraction of full growth)
 const PEAK_MAX = 1; // largest random peak size
 
-/** Zero velocity at both t=0 and t=1 — a soft start and a soft arrival. */
-function smoothstep(t: number): number {
-	const c = Math.min(1, Math.max(0, t));
-	return c * c * (3 - 2 * c);
-}
-
 interface Pulse {
 	node: GNode;
 	start: number;
@@ -30,18 +25,10 @@ interface Pulse {
 	peak: number;
 }
 
-/** 0 → 1 over the first half of `duration`, then 1 → 0 over the second. */
-function envelope(local: number, duration: number): number {
-	const half = duration / 2;
-	if (local < half) return smoothstep(local / half);
-	return 1 - smoothstep((local - half) / half);
-}
-
 let pulses: Pulse[] = [];
 let lastSpawnAt = -Infinity;
 
 const flicker: GraphAnimation = {
-	label,
 	intervalSeconds: TICK_SECONDS,
 
 	trigger(ctx) {
@@ -76,7 +63,7 @@ const flicker: GraphAnimation = {
 			if (p.node.id !== n.id) continue;
 			const local = now - p.start;
 			if (local < 0 || local > p.duration) continue;
-			const v = p.peak * envelope(local, p.duration);
+			const v = p.peak * riseFall(local, p.duration / 2, p.duration / 2);
 			if (v > best) best = v;
 		}
 		return best;
