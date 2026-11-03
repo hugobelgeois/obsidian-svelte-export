@@ -29,10 +29,7 @@ export function applyBase(html: string): string {
  * Lightweight Markdown → HTML renderer.
  */
 export function renderMarkdown(md: string): string {
-	let src = md.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-	src = src.replace(/^---\n[\s\S]*?\n---\n?/, "");
-
-	const lines = src.split("\n");
+	const lines = md.replace(/\r\n?/g, "\n").split("\n");
 	const out: string[] = [];
 	let i = 0;
 
@@ -140,8 +137,7 @@ export function renderMarkdown(md: string): string {
 			lines[i].trim() !== "" &&
 			!/^[>#`|]/.test(lines[i]) &&
 			!/^\s*[*\-+]\s/.test(lines[i]) &&
-			!/^\s*\d+\.\s/.test(lines[i]) &&
-			!/^#{1,6}\s/.test(lines[i])
+			!/^\s*\d+\.\s/.test(lines[i])
 		) {
 			paraLines.push(lines[i]);
 			i++;

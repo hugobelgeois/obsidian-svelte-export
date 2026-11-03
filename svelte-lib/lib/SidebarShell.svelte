@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Icon from "$lib/Icon.svelte";
 	import type { Snippet } from "svelte";
 
 	/**
@@ -44,24 +45,13 @@
 					aria-label="Collapse sidebar"
 					onclick={toggleCollapsed}
 				>
-					<svg
-						xmlns="http://www.w3.org/2000/svg"
-						width="16"
-						height="16"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						class="svg-icon"
-					>
+					<Icon size={16}>
 						{#if side === "left"}
 							<path d="M15 18l-6-6 6-6" />
 						{:else}
 							<path d="M9 18l6-6-6-6" />
 						{/if}
-					</svg>
+					</Icon>
 				</button>
 				{@render headerAfter?.()}
 			</div>

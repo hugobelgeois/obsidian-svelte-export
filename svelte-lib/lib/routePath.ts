@@ -5,7 +5,7 @@ import { base } from "$app/paths";
  * the site's base path in production — e.g. "/aerethios/Notes/Arvens" on a
  * GitHub Pages project page) into the canonical base-less route path used
  * internally everywhere else (siteTree.ts's TreeNode.path, Graph.svelte's
- * node ids, hiddenPaths.ts, …). Without stripping `base` here, comparisons
+ * node ids, exportData.ts's HIDDEN_PATHS, …). Without stripping `base` here, comparisons
  * like `node.path === currentPath` would never match once the site is
  * deployed under a subpath, even though everything works at "/" in dev.
  */

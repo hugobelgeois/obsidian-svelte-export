@@ -11,14 +11,14 @@ import {
 	TFolder,
 } from "obsidian";
 import * as path from "path";
-import {
-	IMAGE_EXTENSIONS,
-	sanitizeRoutePath,
-	STATIC_PASSTHROUGH_EXTENSIONS,
-} from "./constants";
+import { IMAGE_EXTENSIONS, sanitizeRoutePath } from "./constants";
 import { showOpenDialogSync } from "./electronDialog";
 import type SvelteExporterPlugin from "./main";
-import { getVaultBasePath, resolveDestinationPath } from "./obsidianUtil";
+import {
+	getVaultBasePath,
+	readJsonFile,
+	toVaultRelativePath,
+} from "./obsidianUtil";
 import {
 	isPluginEnabled,
 	isPluginInstalled,
@@ -26,15 +26,11 @@ import {
 	pluginDisplayName,
 } from "./pluginIntegrations";
 
-export type MarkdownStyle = "obsidian" | "custom" | "none";
-
 export interface SvelteExporterSettings {
 	destinationPath: string;
 	selectedPaths: string[];
 	hiddenPaths: string[];
 	openAfterExport: boolean;
-	markdownStyle: MarkdownStyle;
-	customCssPath: string;
 	selectedTheme: string; // "" = follow Obsidian, "__none__" = no theme, else theme name
 	// "" = welcome screen (default), "__graph__" = graph view as a full page,
 	// else a vault file path (from selectedPaths) to redirect "/" to.
@@ -72,8 +68,6 @@ export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	selectedPaths: [],
 	hiddenPaths: [],
 	openAfterExport: false,
-	markdownStyle: "obsidian",
-	customCssPath: "",
 	selectedTheme: "__none__",
 	defaultPage: "",
 	graphAnimationType: "heartbeat",
@@ -83,6 +77,8 @@ export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	customScriptPaths: [],
 	disabledIntegrations: [],
 };
+
+type PathList = "selectedPaths" | "hiddenPaths";
 
 export class SvelteExporterSettingTab extends PluginSettingTab {
 	plugin: SvelteExporterPlugin;
@@ -259,23 +255,13 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 								],
 							})?.[0];
 							if (!chosen) return;
-							const vaultPath = getVaultBasePath(this.app);
-							const normalizedChosen = chosen
-								.replace(/\\/g, "/")
-								.toLowerCase();
-							const normalizedVault = vaultPath
-								.replace(/\\/g, "/")
-								.toLowerCase();
-							if (!normalizedChosen.startsWith(normalizedVault)) {
+							const relative = toVaultRelativePath(vaultPath, chosen);
+							if (relative === null) {
 								new Notice(
 									"⚠️ favicon must be a file inside the vault.",
 								);
 								return;
 							}
-							const relative = chosen
-								.slice(vaultPath.length)
-								.replace(/\\/g, "/")
-								.replace(/^\/+/, "");
 							this.plugin.settings.faviconPath = relative;
 							void this.plugin.saveSettings();
 							faviconText.setValue(relative);
@@ -365,7 +351,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		// One entry per currently-selected markdown file, so the user can
 		// pick any exported note as the site's landing page.
 		const availablePages = this.plugin
-			.resolveFiles(this.plugin.settings.selectedPaths ?? [])
+			.resolveFiles(this.plugin.settings.selectedPaths)
 			.filter((f) => f.extension === "md")
 			.sort((a, b) => a.path.localeCompare(b.path));
 		for (const file of availablePages) {
@@ -387,7 +373,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				)) {
 					drop.addOption(value, label);
 				}
-				const current = this.plugin.settings.defaultPage ?? "";
+				const current = this.plugin.settings.defaultPage;
 				// Fall back to the default if the previously-chosen page is
 				// no longer part of the export selection.
 				drop.setValue(
@@ -409,13 +395,8 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		// svelte-lib/lib/animationRegistry.ts, which loads the same folder
 		// at build time). Adding or removing a file changes what's offered
 		// here with no other wiring needed.
-		const pluginDir = path.join(
-			vaultPath,
-			this.plugin.manifest.dir ??
-				`${this.app.vault.configDir}/plugins/${this.plugin.manifest.id}`,
-		);
 		const animationsDir = path.join(
-			pluginDir,
+			this.plugin.getPluginDir(),
 			"svelte-lib",
 			"lib",
 			"animations",
@@ -425,9 +406,9 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			random: "Random (a different one each page load)",
 		};
 		if (fs.existsSync(animationsDir)) {
-			const files: string[] = fs
+			const files = fs
 				.readdirSync(animationsDir)
-				.filter((f: string) => f.endsWith(".ts") && f !== "types.ts")
+				.filter((f) => f.endsWith(".ts") && f !== "types.ts")
 				.sort();
 			for (const file of files) {
 				const id = file.replace(/\.ts$/, "");
@@ -499,7 +480,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			cls: "setting-item-description",
 		});
 
-		for (const scriptPath of this.plugin.settings.customScriptPaths ?? []) {
+		for (const scriptPath of this.plugin.settings.customScriptPaths) {
 			new Setting(containerEl)
 				.setName(path.basename(scriptPath))
 				.setDesc(scriptPath)
@@ -533,23 +514,13 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 								],
 							})?.[0];
 							if (!chosen) return;
-							const vaultPath = getVaultBasePath(this.app);
-							const normalizedChosen = chosen
-								.replace(/\\/g, "/")
-								.toLowerCase();
-							const normalizedVault = vaultPath
-								.replace(/\\/g, "/")
-								.toLowerCase();
-							if (!normalizedChosen.startsWith(normalizedVault)) {
+							const relative = toVaultRelativePath(vaultPath, chosen);
+							if (relative === null) {
 								new Notice(
 									"⚠️ script must be a file inside the vault.",
 								);
 								return;
 							}
-							const relative = chosen
-								.slice(vaultPath.length)
-								.replace(/\\/g, "/")
-								.replace(/^\/+/, "");
 							if (
 								!this.plugin.settings.customScriptPaths.includes(
 									relative,
@@ -573,26 +544,10 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		// ── Export cache ──────────────────────────────────────────────────
 		new Setting(containerEl).setName("Export cache").setHeading();
 
-		this.cachedPaths = new Set();
-		const cacheFile = this.plugin.settings.destinationPath
-			? path.join(
-					resolveDestinationPath(
-						getVaultBasePath(this.app),
-						this.plugin.settings.destinationPath,
-					),
-					".export-cache.json",
-				)
-			: null;
-		if (cacheFile && fs.existsSync(cacheFile)) {
-			try {
-				const data = JSON.parse(
-					fs.readFileSync(cacheFile, "utf-8"),
-				) as Record<string, number>;
-				this.cachedPaths = new Set(Object.keys(data));
-			} catch {
-				/* ignore */
-			}
-		}
+		const cacheFile = this.plugin.getCacheFilePath();
+		this.cachedPaths = new Set(
+			Object.keys(cacheFile ? readJsonFile(cacheFile, {}) : {}),
+		);
 		const cacheSize = this.cachedPaths.size;
 
 		new Setting(containerEl)
@@ -605,8 +560,8 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			.addButton((btn) => {
 				btn.setButtonText("Clear cache")
 					.setWarning()
-					.onClick(async () => {
-						await this.plugin.clearCache();
+					.onClick(() => {
+						this.plugin.clearCache();
 						new Notice(
 							"🗑️ export cache cleared. All files will be re-exported on the next run.",
 						);
@@ -648,7 +603,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			} else if (child instanceof TFile) {
 				if (
 					child.extension === "md" ||
-					STATIC_PASSTHROUGH_EXTENSIONS.has(child.extension)
+					IMAGE_EXTENSIONS.has(child.extension)
 				) {
 					this.renderFileNode(container, child, depth);
 				}
@@ -677,31 +632,23 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		// Export checkbox
 		const exportCb = row.createEl("input", {
 			type: "checkbox",
+			cls: "sve-cb",
+			attr: { title: "Export" },
 		});
-		exportCb.title = "Export";
-		exportCb.className = "sve-cb";
 		// Checked as soon as the folder itself OR any descendant is selected,
 		// so checking a single deeply-nested file lights up every ancestor
 		// checkbox up the tree (without touching sibling checkboxes).
 		exportCb.checked =
 			this.plugin.settings.selectedPaths.includes(folder.path) ||
 			this.hasPartialSelection(folder);
-		exportCb.indeterminate = false;
 
 		// Eye toggle button (visible = not hidden)
-		const eyeBtn = row.createEl("button", { cls: "sve-eye-btn" });
-		const isHidden =
+		const eyeBtn = this.createEyeButton(
+			row,
 			this.plugin.settings.hiddenPaths.includes(folder.path) ||
-			this.isAncestorHidden(folder);
-		setIcon(eyeBtn, isHidden ? "eye-off" : "eye");
-		eyeBtn.title = isHidden
-			? "Hidden from file tree"
-			: "Visible in file tree";
-		eyeBtn.classList.toggle("sve-eye-hidden", isHidden);
-		if (!exportCb.checked) {
-			eyeBtn.disabled = true;
-			eyeBtn.classList.add("sve-eye-disabled");
-		}
+				this.isAncestorHidden(folder),
+			!exportCb.checked,
+		);
 
 		// Children container — respects expanded state
 		const childrenEl = container.createDiv({
@@ -730,17 +677,13 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				if (exportCb.checked) {
 					// Select folder AND all descendants explicitly (2.1 reverse:
 					// checking a parent selects every child).
-					this.selectPath(folder.path);
-					this.selectAllDescendants(folder);
+					this.addPath("selectedPaths", folder.path);
+					this.addDescendants("selectedPaths", folder);
 				} else {
-					// 2.1: unchecking a parent deselects every descendant.
-					// deselectByPrefix works on the stored path strings directly,
-					// so it also clears stale entries left over from files that
-					// were since renamed/moved — deselectAllDescendants (which
-					// only walks the *current* live vault tree) could leave those
-					// behind and make the checkbox impossible to fully uncheck.
-					this.deselectByPrefix(folder.path);
-					this.deselectHiddenByPrefix(folder.path);
+					// 2.1: unchecking a parent deselects every descendant
+					// (by prefix — see removeByPrefix).
+					this.removeByPrefix("selectedPaths", folder.path);
+					this.removeByPrefix("hiddenPaths", folder.path);
 				}
 				await this.plugin.saveSettings();
 				// Refresh just the tree: ancestors above this folder may also
@@ -758,12 +701,12 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				if (nowHidden) {
 					// Making a parent visible again makes every descendant
 					// explicitly visible too (mirrors Export's uncheck cascade).
-					this.deselectHiddenByPrefix(folder.path);
+					this.removeByPrefix("hiddenPaths", folder.path);
 				} else {
 					// Hiding a parent explicitly hides every descendant —
 					// files AND folders — not just this folder itself.
-					this.selectHiddenPath(folder.path);
-					this.hideAllDescendants(folder);
+					this.addPath("hiddenPaths", folder.path);
+					this.addDescendants("hiddenPaths", folder);
 				}
 				await this.plugin.saveSettings();
 				// Same logic as Export: refresh the tree (not just this button)
@@ -793,11 +736,11 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		// Export checkbox
 		const exportCb = row.createEl("input", {
 			type: "checkbox",
+			cls: "sve-cb",
+			attr: { title: "Export" },
 		});
-		exportCb.title = "Export";
-		exportCb.className = "sve-cb";
 		// Reflects this file's own explicit selection only. When a folder is
-		// checked, selectAllDescendants already adds every descendant file to
+		// checked, addDescendants already adds every descendant file to
 		// selectedPaths, so this stays accurate — and, unlike before, the
 		// checkbox is never disabled: the user can still uncheck this one
 		// file even while its parent folder is checked (2.2).
@@ -806,28 +749,20 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		);
 
 		// Eye toggle button
-		const eyeBtn = row.createEl("button", { cls: "sve-eye-btn" });
 		const ancestorHidden = this.isAncestorHidden(file);
-		const isHidden =
-			this.plugin.settings.hiddenPaths.includes(file.path) ||
-			ancestorHidden;
-		setIcon(eyeBtn, isHidden ? "eye-off" : "eye");
-		eyeBtn.title = isHidden
-			? "Hidden from file tree"
-			: "Visible in file tree";
-		eyeBtn.classList.toggle("sve-eye-hidden", isHidden);
-		if (ancestorHidden || !exportCb.checked) {
-			eyeBtn.disabled = true;
-			eyeBtn.classList.add("sve-eye-disabled");
-		}
+		const eyeBtn = this.createEyeButton(
+			row,
+			this.plugin.settings.hiddenPaths.includes(file.path) || ancestorHidden,
+			ancestorHidden || !exportCb.checked,
+		);
 
 		exportCb.addEventListener(
 			"change",
 			this.onAsync(async () => {
-				if (exportCb.checked) this.selectPath(file.path);
+				if (exportCb.checked) this.addPath("selectedPaths", file.path);
 				else {
-					this.deselectPath(file.path);
-					this.deselectHiddenPath(file.path);
+					this.removePath("selectedPaths", file.path);
+					this.removePath("hiddenPaths", file.path);
 				}
 				await this.plugin.saveSettings();
 				// Refresh the tree so every ancestor folder checkbox up the tree
@@ -843,14 +778,31 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 					file.path,
 				);
 				if (nowHidden) {
-					this.deselectHiddenPath(file.path);
+					this.removePath("hiddenPaths", file.path);
 				} else {
-					this.selectHiddenPath(file.path);
+					this.addPath("hiddenPaths", file.path);
 				}
 				await this.plugin.saveSettings();
 				this.refreshTree();
 			}),
 		);
+	}
+
+	/** The "Visible" toggle shown on every tree row. */
+	private createEyeButton(
+		row: HTMLElement,
+		isHidden: boolean,
+		disabled: boolean,
+	): HTMLButtonElement {
+		const eyeBtn = row.createEl("button", { cls: "sve-eye-btn" });
+		setIcon(eyeBtn, isHidden ? "eye-off" : "eye");
+		eyeBtn.title = isHidden ? "Hidden from file tree" : "Visible in file tree";
+		eyeBtn.toggleClass("sve-eye-hidden", isHidden);
+		if (disabled) {
+			eyeBtn.disabled = true;
+			eyeBtn.addClass("sve-eye-disabled");
+		}
+		return eyeBtn;
 	}
 
 	/** Wraps an async DOM event handler so it can be passed to addEventListener without a dangling, unhandled promise. */
@@ -861,69 +813,40 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 	}
 
 	// ── Selection helpers ─────────────────────────────────────────────────
+	// Same operations for both stored lists: "selectedPaths" (Export) and
+	// "hiddenPaths" (Visible).
 
-	private selectPath(p: string) {
-		if (!this.plugin.settings.selectedPaths.includes(p))
-			this.plugin.settings.selectedPaths.push(p);
+	private addPath(list: PathList, p: string) {
+		if (!this.plugin.settings[list].includes(p))
+			this.plugin.settings[list].push(p);
 	}
-	private deselectPath(p: string) {
-		this.plugin.settings.selectedPaths =
-			this.plugin.settings.selectedPaths.filter((s) => s !== p);
+
+	private removePath(list: PathList, p: string) {
+		this.plugin.settings[list] = this.plugin.settings[list].filter(
+			(s) => s !== p,
+		);
 	}
 
 	/**
 	 * Remove `p` itself and every stored path nested under it, by string
 	 * prefix — directly on the persisted array, not by walking the live
-	 * vault tree. This is what makes unchecking a folder reliable even for
-	 * data saved before this fix: if a file was renamed/moved/deleted since
-	 * the folder was last checked, its stale entry can no longer be reached
-	 * by recursing `folder.children` (deselectAllDescendants), which left it
-	 * behind forever and made the checkbox impossible to fully uncheck.
+	 * vault tree, so entries left over from files since renamed, moved or
+	 * deleted are cleared too (otherwise a folder's checkbox could become
+	 * impossible to fully uncheck).
 	 */
-	private deselectByPrefix(p: string) {
+	private removeByPrefix(list: PathList, p: string) {
 		const prefix = p === "/" ? "" : p + "/";
-		this.plugin.settings.selectedPaths =
-			this.plugin.settings.selectedPaths.filter(
-				(s) => s !== p && !s.startsWith(prefix),
-			);
+		this.plugin.settings[list] = this.plugin.settings[list].filter(
+			(s) => s !== p && !s.startsWith(prefix),
+		);
 	}
 
-	/** Select ALL current descendants (files + folders) so they show as checked. */
-	private selectAllDescendants(folder: TFolder) {
+	/** Add every current descendant (files AND folders) of `folder`, so each
+	 * one's own checkbox/eye reflects the cascade. */
+	private addDescendants(list: PathList, folder: TFolder) {
 		for (const child of folder.children) {
-			this.selectPath(child.path);
-			if (child instanceof TFolder) this.selectAllDescendants(child);
-		}
-	}
-
-	private selectHiddenPath(p: string) {
-		if (!this.plugin.settings.hiddenPaths.includes(p))
-			this.plugin.settings.hiddenPaths.push(p);
-	}
-	private deselectHiddenPath(p: string) {
-		this.plugin.settings.hiddenPaths =
-			this.plugin.settings.hiddenPaths.filter((s) => s !== p);
-	}
-	private deselectHiddenByPrefix(p: string) {
-		const prefix = p === "/" ? "" : p + "/";
-		this.plugin.settings.hiddenPaths =
-			this.plugin.settings.hiddenPaths.filter(
-				(s) => s !== p && !s.startsWith(prefix),
-			);
-	}
-
-	/**
-	 * Mark every current descendant (files AND folders) explicitly hidden —
-	 * mirrors selectAllDescendants for Export. Without this, only the
-	 * clicked folder's own entry was recorded and children relied purely on
-	 * ancestor inheritance (isAncestorHidden) to *look* hidden in the
-	 * exported site, but their own eye state here in settings never
-	 * reflected it.
-	 */
-	private hideAllDescendants(folder: TFolder) {
-		for (const child of folder.children) {
-			this.selectHiddenPath(child.path);
-			if (child instanceof TFolder) this.hideAllDescendants(child);
+			this.addPath(list, child.path);
+			if (child instanceof TFolder) this.addDescendants(list, child);
 		}
 	}
 

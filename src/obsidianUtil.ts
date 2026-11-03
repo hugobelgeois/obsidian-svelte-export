@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import { App, FileSystemAdapter } from "obsidian";
 import * as path from "path";
 
@@ -39,3 +40,34 @@ export function resolveDestinationPath(
 	// "..\site" instead of being split into its parent/child parts.
 	return path.resolve(vaultPath, destinationPath.replace(/\\/g, "/"));
 }
+
+/**
+ * Turns an absolute path picked in a native file dialog into a
+ * vault-relative one ("/"-separated), or null if it's outside the vault.
+ */
+export function toVaultRelativePath(
+	vaultPath: string,
+	absolutePath: string,
+): string | null {
+	const normalize = (p: string) => p.replace(/\\/g, "/");
+	const vault = normalize(vaultPath).replace(/\/+$/, "");
+	const chosen = normalize(absolutePath);
+	if (!chosen.toLowerCase().startsWith(vault.toLowerCase() + "/")) return null;
+	return chosen.slice(vault.length + 1);
+}
+
+/** Parsed JSON file, or `fallback` if it's missing or unreadable. */
+export function readJsonFile<T>(filePath: string, fallback: T): T {
+	try {
+		return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
+	} catch {
+		return fallback;
+	}
+}
+
+export function writeJsonFile(filePath: string, data: unknown): void {
+	fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+}
+
+/** Records the mtime of every exported file — see runExport() in main.ts. */
+export const EXPORT_CACHE_FILE = ".export-cache.json";

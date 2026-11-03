@@ -1,13 +1,13 @@
 <script lang="ts">
 	import Body from "$lib/Body.svelte";
 	import LeftSidebar from "$lib/LeftSidebar.svelte";
+	import Icon from "$lib/Icon.svelte";
 	import RightSidebar from "$lib/RightSidebar.svelte";
-	import { STYLE_SETTINGS_CLASSES } from "$lib/styleSettingsClasses";
-	import { DEFAULT_COLOR_MODE } from "$lib/themeConfig";
+	import ThemeIcon from "$lib/ThemeIcon.svelte";
+	import { DEFAULT_COLOR_MODE, STYLE_SETTINGS_CLASSES } from "$lib/exportData";
 	import type { Snippet } from "svelte";
 	import { onMount, tick } from "svelte";
-	import { afterNavigate, goto } from "$app/navigation";
-	import { base } from "$app/paths";
+	import { afterNavigate } from "$app/navigation";
 	import { page } from "$app/stores";
 	import "../markdown-fallback.css";
 	import "../app.css";
@@ -27,40 +27,6 @@
 	// resolve.alias entry; a relative path sidesteps that alias-resolution
 	// step, which otherwise silently returns an empty match (no error).
 	const customScripts = import.meta.glob("../lib/customScripts/*.{js,ts}");
-
-	// Some custom scripts (e.g. the Map Manager plugin's viewer) fetch their
-	// own data files by an absolute, vault-root-relative URL rather than
-	// through SvelteKit's routing, so they can't pick up `base` themselves.
-	// Map Manager's viewer specifically reads this global — see its
-	// customScript.ts (`window.MAP_MANAGER_VIEWER_BASE_URL || "/"`). Without
-	// it, its fetches resolve against the domain root instead of the GitHub
-	// Pages "/<repo>/" subpath (base is "" locally, so this was invisible in
-	// dev) and every map 404s as "Carte introuvable".
-	if (typeof window !== "undefined") {
-		(window as unknown as { MAP_MANAGER_VIEWER_BASE_URL?: string }).MAP_MANAGER_VIEWER_BASE_URL =
-			base || "/";
-	}
-
-	// Map Manager's snapshot JSON also embeds fully-rendered HTML for each
-	// linked note (baked in by the live Obsidian plugin when the map was
-	// last saved), including that note's own <a href="/Jeu/..."> links —
-	// generated from inside Obsidian, which has no idea the export will
-	// live under a GitHub Pages "/<repo>" subpath, so they're always
-	// root-relative and base-less. mountBlock() drops that HTML straight
-	// into the page via innerHTML, so clicking one of those links 404s
-	// (missing the base prefix) even though every link this app generates
-	// itself is correctly prefixed. A delegated click handler is the only
-	// way to catch these, since the HTML arrives well after this layout
-	// mounts, at whatever point the user opens a token's note tab.
-	function fixUnbasedInternalLink(e: MouseEvent) {
-		if (!base || e.defaultPrevented) return;
-		const link = (e.target as HTMLElement).closest?.("a[href]");
-		if (!(link instanceof HTMLAnchorElement)) return;
-		const href = link.getAttribute("href");
-		if (!href || !href.startsWith("/") || href.startsWith(`${base}/`)) return;
-		e.preventDefault();
-		void goto(base + href);
-	}
 
 	// The graph page's own content IS the graph — the right sidebar's mini
 	// preview of the same graph would be redundant, so it's not just
@@ -136,8 +102,6 @@
 			leftCollapsed = false;
 			rightCollapsed = false;
 		}
-
-		document.addEventListener("click", fixUnbasedInternalLink);
 	});
 
 	// onMount alone only fires once, when this root layout first mounts —
@@ -194,20 +158,9 @@
 			title={label}
 			{onclick}
 		>
-			<svg
-				xmlns="http://www.w3.org/2000/svg"
-				width="16"
-				height="16"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="2"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-				class="svg-icon"
-			>
+			<Icon size={16}>
 				<path {d} />
-			</svg>
+			</Icon>
 		</button>
 	{/snippet}
 
@@ -230,42 +183,7 @@
 			title="Toggle light/dark mode"
 			onclick={toggleTheme}
 		>
-			{#if theme === "dark"}
-				<!-- Sun -->
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					width="16"
-					height="16"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					class="svg-icon"
-				>
-					<circle cx="12" cy="12" r="5" />
-					<path
-						d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"
-					/>
-				</svg>
-			{:else}
-				<!-- Moon -->
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					width="16"
-					height="16"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					class="svg-icon"
-				>
-					<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-				</svg>
-			{/if}
+			<ThemeIcon {theme} />
 		</button>
 	{/if}
 </div>

@@ -220,14 +220,7 @@
   color: var(--callout-color, var(--text-normal));
 }
 
-/* ── Scrollbar ───────────────────────────────────────────── */
-
-.markdown-preview-view::-webkit-scrollbar { width: 6px; }
-.markdown-preview-view::-webkit-scrollbar-track { background: transparent; }
-.markdown-preview-view::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb-bg, var(--background-modifier-border));
-  border-radius: 3px;
-}
+/* Scrollbars: see .styled-scrollbars in layout.css. */
 
 /* ── Mobile ───────────────────────────────────────────────── */
 

@@ -21,15 +21,28 @@ export interface ExportResult {
 	pluginAssets: string[];
 }
 
+/** Vault-wide lookups shared by every exported page — built once per
+ * export by buildLinkMaps() rather than once per file. */
+export interface LinkMaps {
+	wikilinkMap: Map<string, string>;
+	imageBasenameMap: Map<string, string>;
+}
+
+export function buildLinkMaps(vault: Vault): LinkMaps {
+	return {
+		wikilinkMap: buildWikilinkMap(vault),
+		imageBasenameMap: buildImageBasenameMap(vault),
+	};
+}
+
 export async function exportFile(
 	file: TFile,
 	destRoot: string,
 	vault: Vault,
 	pluginRenderer: PluginBlockRenderer,
+	{ wikilinkMap, imageBasenameMap }: LinkMaps,
 ): Promise<ExportResult> {
 	const markdown = await vault.read(file);
-	const wikilinkMap = buildWikilinkMap(vault);
-	const imageBasenameMap = buildImageBasenameMap(vault);
 	const { meta, body } = parseFrontMatter(markdown);
 	const plugins = await renderPluginBlocks(
 		body,
@@ -51,10 +64,7 @@ export async function exportFile(
 	const sanitizedPath = sanitizeRoutePath(file.path);
 
 	const outputDir = path.join(destRoot, "src", "routes", sanitizedPath);
-
-	if (!fs.existsSync(outputDir)) {
-		fs.mkdirSync(outputDir, { recursive: true });
-	}
+	fs.mkdirSync(outputDir, { recursive: true });
 
 	fs.writeFileSync(path.join(outputDir, "+page.svelte"), pageSvelte, "utf-8");
 	fs.writeFileSync(path.join(outputDir, "+page.ts"), pageTs, "utf-8");
@@ -106,10 +116,7 @@ async function renderPluginBlocks(
 	};
 	const resolveLink = (target: string) => {
 		const resolved = resolveWikilink(target, wikilinkMap);
-		if (!resolved) return null;
-		const { route, fragment } = resolved;
-		const href = fragment ? `${route}#${slugify(fragment)}` : route;
-		return BASE_PATH_SENTINEL + href;
+		return resolved ? BASE_PATH_SENTINEL + wikilinkHref(resolved) : null;
 	};
 
 	const lines = body.split("\n");
@@ -210,6 +217,11 @@ function resolveWikilink(
 	return { route, fragment };
 }
 
+/** Base-less href for a resolved wikilink, fragment slugified like heading ids. */
+function wikilinkHref({ route, fragment }: { route: string; fragment: string }) {
+	return fragment ? `${route}#${slugify(fragment)}` : route;
+}
+
 // ── Front-matter parser ────────────────────────────────────────────────────
 
 function parseFrontMatter(markdown: string): {
@@ -308,7 +320,7 @@ function processWikilinks(
 				return `<span class="wiki-unresolved">${label}</span>`;
 			linkedRoutes.add(resolved.route);
 			const { route, fragment } = resolved;
-			const href = fragment ? `${route}#${slugify(fragment)}` : route;
+			const href = wikilinkHref(resolved);
 			// Use HTML <a> directly so the link survives renderMarkdown unchanged.
 			// data-wiki-href stays sentinel-free — LinkPreview.svelte/wikiFetch.ts
 			// add the real base themselves when they fetch it.

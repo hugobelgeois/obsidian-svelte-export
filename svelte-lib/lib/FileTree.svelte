@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { base } from "$app/paths";
-	import { HIDDEN_PATHS } from "$lib/hiddenPaths";
+	import { HIDDEN_PATHS } from "$lib/exportData";
+	import Icon from "$lib/Icon.svelte";
 	import { siteTree, type TreeNode } from "$lib/siteTree";
 
 	interface Props {
@@ -87,11 +88,9 @@
 			style={itemStyle(node.depth)}
 		>
 			<div class="tree-item-icon collapse-icon" class:is-collapsed={!isOpen(node.path) && !query}>
-				<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"
-					fill="none" stroke="currentColor" stroke-width="2"
-					stroke-linecap="round" stroke-linejoin="round" class="svg-icon right-triangle">
+				<Icon size={24} class="svg-icon right-triangle">
 					<path d="M3 8L12 17L21 8" />
-				</svg>
+				</Icon>
 			</div>
 			<div class="tree-item-inner nav-folder-title-content">{node.name}</div>
 		</div>
@@ -109,4 +108,4 @@
 	{#each filteredTree as node}
 		{#if node.children}{@render folderNode(node)}{:else}{@render fileNode(node)}{/if}
 	{/each}
-</div>
+</div>

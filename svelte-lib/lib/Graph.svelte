@@ -3,11 +3,15 @@
 	import { base } from "$app/paths";
 	import { page } from "$app/stores";
 	import { animationRegistry, randomAnimationId } from "$lib/animationRegistry";
-	import { ANIMATION_INTERVAL_SECONDS, ANIMATION_TYPE } from "$lib/graphConfig";
+	import {
+		ANIMATION_INTERVAL_SECONDS,
+		ANIMATION_TYPE,
+		NODE_COLORS,
+	} from "$lib/exportData";
 	import type { GNode } from "$lib/graphTypes";
 	import { getLinkEdges } from "$lib/linkGraph";
-	import { NODE_COLORS } from "$lib/nodeColors";
 	import { toRoutePath } from "$lib/routePath";
+	import Icon from "$lib/Icon.svelte";
 	import { flattenTree, siteTree } from "$lib/siteTree";
 	import { onDestroy, onMount } from "svelte";
 
@@ -111,9 +115,23 @@
 		(l) => nodeIndex.has(l.source) && nodeIndex.has(l.target),
 	);
 
+	/** Node id → ids of every node it's directly linked to. */
+	const adjacency = new Map<string, string[]>(nodes.map((n) => [n.id, []]));
 	for (const l of links) {
+		adjacency.get(l.source)!.push(l.target);
+		adjacency.get(l.target)!.push(l.source);
 		nodeIndex.get(l.source)!.degree++;
 		nodeIndex.get(l.target)!.degree++;
+	}
+
+	/** `id` itself plus every note directly linked to it (empty for null). */
+	function withNeighbors(id: string | null): Set<string> {
+		return id ? new Set([id, ...(adjacency.get(id) ?? [])]) : new Set();
+	}
+
+	/** Same size formula for every node — only depends on its link count. */
+	function baseRadius(n: GNode, scale: number): number {
+		return (3.5 + Math.min(n.degree, 6) * 0.55) / scale;
 	}
 
 	// ── Progressive reveal (standalone page only) ───────────────────────────
@@ -123,13 +141,6 @@
 	// graph. Once a whole connected component is exhausted, jump to the
 	// next most-connected node not yet reached (covers disconnected notes).
 	function computeRevealOrder(): string[] {
-		const adjacency = new Map<string, string[]>();
-		for (const n of nodes) adjacency.set(n.id, []);
-		for (const l of links) {
-			adjacency.get(l.source)?.push(l.target);
-			adjacency.get(l.target)?.push(l.source);
-		}
-
 		const byDegreeDesc = [...nodes].sort((a, b) => b.degree - a.degree);
 		const visited = new Set<string>();
 		const order: string[] = [];
@@ -290,7 +301,7 @@
 		// toward the center, on top of the degree-based one below, so they
 		// stay as close to the middle as possible regardless of how many
 		// links they otherwise have.
-		const focusIds = getCurrentNeighborIds();
+		const focusIds = withNeighbors(currentPath);
 
 		for (const n of nodes) {
 			if (n.fx !== null && n.fy !== null) {
@@ -484,18 +495,6 @@
 		view.panY = view.height / 2 - n.y * view.scale;
 	}
 
-	/** Current note + every note directly linked to it. */
-	function getCurrentNeighborIds(): Set<string> {
-		const ids = new Set<string>();
-		if (!currentPath) return ids;
-		ids.add(currentPath);
-		for (const l of links) {
-			if (l.source === currentPath) ids.add(l.target);
-			else if (l.target === currentPath) ids.add(l.source);
-		}
-		return ids;
-	}
-
 	/** Fully restart the layout from scratch — scattered positions, hot
 	 * physics, no leftover velocity or drag state. */
 	function resetPhysics() {
@@ -569,19 +568,12 @@
 		const dimDt = lastDimFrameTime > 0 ? now - lastDimFrameTime : 16;
 		lastDimFrameTime = now;
 
-		const neighborIds = getCurrentNeighborIds();
+		const neighborIds = withNeighbors(currentPath);
 		// Filter (2): restrict to current note + its direct neighbors.
 		const visibleIds = showOnlyLinked ? neighborIds : null;
 
 		const hovered = view.hoveredId ? nodeIndex.get(view.hoveredId) : null;
-		const linkedToHovered = new Set<string>();
-		if (hovered) {
-			linkedToHovered.add(hovered.id);
-			for (const l of links) {
-				if (l.source === hovered.id) linkedToHovered.add(l.target);
-				if (l.target === hovered.id) linkedToHovered.add(l.source);
-			}
-		}
+		const linkedToHovered = withNeighbors(hovered?.id ?? null);
 
 		// Label mode: in the big view with "all notes" shown, every note's
 		// name visibility depends on how many links it has (more links =
@@ -666,8 +658,7 @@
 			const dimmed = !!hovered && !linkedToHovered.has(n.id);
 			updateDimAlpha(n, dimmed ? 0.35 : 1, dimDt);
 			const ease = revealEase(n, now);
-			// Size depends only on how many links a note has.
-			const baseR = (3.5 + Math.min(n.degree, 6) * 0.55) / view.scale;
+			const baseR = baseRadius(n, view.scale);
 			const intensity = activeAnimation?.getIntensity?.(n, now) ?? 0;
 			const r = baseR * ease * animationScale(n, now);
 			const p = drawPos(n);
@@ -717,7 +708,7 @@
 			// Same size formula as every other node — only the color and
 			// halo mark it as "you are here", not an oversized radius.
 			const r =
-				((3.5 + Math.min(currentNode.degree, 6) * 0.55) / view.scale) *
+				baseRadius(currentNode, view.scale) *
 				ease *
 				animationScale(currentNode, now);
 			const p = drawPos(currentNode);
@@ -882,47 +873,70 @@
 		return best;
 	}
 
-	// ── Sidebar interactions: hover, click to navigate, AND drag (5) ────────
+	// ── Pointer interactions ─────────────────────────────────────────────────
+	// Both views: hover, click a node to navigate, drag a node (5). The
+	// big view (`canPan`) also drags the background to pan.
 
-	function handleSidebarPointerDown(e: PointerEvent) {
-		const { x, y } = toWorld(sidebarView, e.clientX, e.clientY);
-		const hit = nodeAt(sidebarView, x, y);
-		sidebarView.moved = false;
-		sidebarView.lastX = e.clientX;
-		sidebarView.lastY = e.clientY;
+	function handlePointerDown(view: View, canPan: boolean, e: PointerEvent) {
+		const { x, y } = toWorld(view, e.clientX, e.clientY);
+		const hit = nodeAt(view, x, y);
+		view.moved = false;
+		view.lastX = e.clientX;
+		view.lastY = e.clientY;
 		if (hit) {
-			sidebarView.dragNode = hit;
+			view.dragNode = hit;
 			hit.fx = hit.x;
 			hit.fy = hit.y;
-			(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		} else if (canPan) {
+			view.isPanning = true;
+		} else {
+			return;
+		}
+		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+	}
+
+	function handlePointerMove(view: View, canPan: boolean, e: PointerEvent) {
+		const dx = e.clientX - view.lastX;
+		const dy = e.clientY - view.lastY;
+		view.lastX = e.clientX;
+		view.lastY = e.clientY;
+		if (!view.moved && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
+			view.moved = true;
+		}
+
+		// No reheat() while dragging on purpose: that would ramp alpha back
+		// up and reactivate repulsion/spring/center forces for every pair in
+		// the graph — a global reshuffle instead of a local one.
+		// enforceSeparation() and applyDragRepulsion() (every frame, in
+		// tick()) already push nearby nodes out of the way.
+		if (view.dragNode) {
+			const { x, y } = toWorld(view, e.clientX, e.clientY);
+			view.dragNode.fx = x;
+			view.dragNode.fy = y;
+		} else if (view.isPanning) {
+			view.panX += dx;
+			view.panY += dy;
+			view.userAdjusted = true;
+		} else {
+			const { x, y } = toWorld(view, e.clientX, e.clientY);
+			const hit = nodeAt(view, x, y);
+			view.hoveredId = hit ? hit.id : null;
+			view.canvas!.style.cursor = hit
+				? "pointer"
+				: canPan
+					? "grab"
+					: "default";
 		}
 	}
 
-	function handleSidebarPointerMove(e: PointerEvent) {
-		if (sidebarView.dragNode) {
-			const dx = e.clientX - sidebarView.lastX;
-			const dy = e.clientY - sidebarView.lastY;
-			// No reheat() here on purpose: that would ramp alpha back up and
-			// reactivate repulsion/spring/center forces for every pair in the
-			// graph, not just around the dragged node — a global reshuffle
-			// instead of a local one. enforceSeparation() (unconditional,
-			// every frame, in tick()) already pushes apart anything that
-			// ends up too close to the dragged node's new position — that's
-			// the only reaction wanted here.
-			if (!sidebarView.moved && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
-				sidebarView.moved = true;
-			}
-			const { x, y } = toWorld(sidebarView, e.clientX, e.clientY);
-			sidebarView.dragNode.fx = x;
-			sidebarView.dragNode.fy = y;
-			sidebarView.lastX = e.clientX;
-			sidebarView.lastY = e.clientY;
-			return;
+	function handlePointerUp(view: View) {
+		if (view.dragNode) {
+			if (!view.moved) focusOnNode(view.dragNode.id);
+			view.dragNode.fx = null;
+			view.dragNode.fy = null;
+			view.dragNode = null;
 		}
-		const { x, y } = toWorld(sidebarView, e.clientX, e.clientY);
-		const hit = nodeAt(sidebarView, x, y);
-		sidebarView.hoveredId = hit ? hit.id : null;
-		sidebarCanvasEl.style.cursor = hit ? "pointer" : "default";
+		view.isPanning = false;
 	}
 
 	/**
@@ -935,80 +949,7 @@
 		// `id` is the base-less canonical route (see node ids) — goto()
 		// needs the real site base prepended, same as any other href.
 		goto(base + id);
-		if (!showOnlyLinked) showOnlyLinked = true;
-	}
-
-	function handleSidebarPointerUp() {
-		if (sidebarView.dragNode) {
-			if (!sidebarView.moved) focusOnNode(sidebarView.dragNode.id);
-			sidebarView.dragNode.fx = null;
-			sidebarView.dragNode.fy = null;
-			sidebarView.dragNode = null;
-		}
-	}
-
-	function handleSidebarLeave() {
-		sidebarView.hoveredId = null;
-	}
-
-	// ── Modal interactions: hover, click, drag node, drag-to-pan, zoom ──────
-
-	function handleModalPointerDown(e: PointerEvent) {
-		const { x, y } = toWorld(modalView, e.clientX, e.clientY);
-		const hit = nodeAt(modalView, x, y);
-		modalView.moved = false;
-		modalView.lastX = e.clientX;
-		modalView.lastY = e.clientY;
-		if (hit) {
-			modalView.dragNode = hit;
-			hit.fx = hit.x;
-			hit.fy = hit.y;
-		} else {
-			modalView.isPanning = true;
-		}
-		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-	}
-
-	function handleModalPointerMove(e: PointerEvent) {
-		const dxScreen = e.clientX - modalView.lastX;
-		const dyScreen = e.clientY - modalView.lastY;
-		// No reheat() here on purpose: that would ramp alpha back up and
-		// reactivate repulsion/spring/center forces for every pair in the
-		// graph, not just around the dragged node — a global reshuffle
-		// instead of a local one. enforceSeparation() (unconditional, every
-		// frame, in tick()) already pushes apart anything that ends up too
-		// close to the dragged node's new position — that's the only
-		// reaction wanted here.
-		if (!modalView.moved && (Math.abs(dxScreen) > 2 || Math.abs(dyScreen) > 2)) {
-			modalView.moved = true;
-		}
-
-		if (modalView.dragNode) {
-			const { x, y } = toWorld(modalView, e.clientX, e.clientY);
-			modalView.dragNode.fx = x;
-			modalView.dragNode.fy = y;
-		} else if (modalView.isPanning) {
-			modalView.panX += dxScreen;
-			modalView.panY += dyScreen;
-			modalView.userAdjusted = true;
-		} else {
-			const { x, y } = toWorld(modalView, e.clientX, e.clientY);
-			const hit = nodeAt(modalView, x, y);
-			modalView.hoveredId = hit ? hit.id : null;
-			modalCanvasEl.style.cursor = hit ? "pointer" : "grab";
-		}
-		modalView.lastX = e.clientX;
-		modalView.lastY = e.clientY;
-	}
-
-	function handleModalPointerUp() {
-		if (modalView.dragNode) {
-			if (!modalView.moved) focusOnNode(modalView.dragNode.id);
-			modalView.dragNode.fx = null;
-			modalView.dragNode.fy = null;
-			modalView.dragNode = null;
-		}
-		modalView.isPanning = false;
+		showOnlyLinked = true;
 	}
 
 	/** Zoom `view` at a screen point, keeping that point fixed under the cursor. */
@@ -1032,14 +973,9 @@
 		view.userAdjusted = true;
 	}
 
-	function handleSidebarWheel(e: WheelEvent) {
+	function handleWheel(view: View, e: WheelEvent) {
 		e.preventDefault();
-		zoomAt(sidebarView, e.clientX, e.clientY, e.deltaY);
-	}
-
-	function handleModalWheel(e: WheelEvent) {
-		e.preventDefault();
-		zoomAt(modalView, e.clientX, e.clientY, e.deltaY);
+		zoomAt(view, e.clientX, e.clientY, e.deltaY);
 	}
 
 	function openModal() {
@@ -1126,21 +1062,12 @@
 		aria-label="Toggle showing only linked notes"
 		onclick={toggleFilter}
 	>
-		<svg
-			xmlns="http://www.w3.org/2000/svg"
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			class="svg-icon"
-		>
+		<Icon>
 			<polygon
 				points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
 				fill="none"
 			/>
-		</svg>
+		</Icon>
 	</button>
 {/snippet}
 
@@ -1152,11 +1079,11 @@
 		<canvas
 			bind:this={modalCanvasEl}
 			class="graph-modal-canvas"
-			onpointerdown={handleModalPointerDown}
-			onpointermove={handleModalPointerMove}
-			onpointerup={handleModalPointerUp}
-			onpointerleave={handleModalPointerUp}
-			onwheel={handleModalWheel}
+			onpointerdown={(e) => handlePointerDown(modalView, true, e)}
+			onpointermove={(e) => handlePointerMove(modalView, true, e)}
+			onpointerup={() => handlePointerUp(modalView)}
+			onpointerleave={() => handlePointerUp(modalView)}
+			onwheel={(e) => handleWheel(modalView, e)}
 		></canvas>
 		<div class="graph-modal-hint">
 			Scroll to zoom · drag background to pan · drag a node to move it ·
@@ -1184,20 +1111,11 @@
 					aria-label="Expand graph view"
 					onclick={openModal}
 				>
-					<svg
-						xmlns="http://www.w3.org/2000/svg"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						class="svg-icon"
-					>
+					<Icon>
 						<path d="M15 3h6v6" /><path d="M9 21H3v-6" /><path
 							d="M21 3l-7 7"
 						/><path d="M3 21l7-7" />
-					</svg>
+					</Icon>
 				</button>
 			</div>
 		</div>
@@ -1209,11 +1127,11 @@
 			<canvas
 				bind:this={sidebarCanvasEl}
 				class="graph-canvas"
-				onpointerdown={handleSidebarPointerDown}
-				onpointermove={handleSidebarPointerMove}
-				onpointerup={handleSidebarPointerUp}
-				onpointerleave={handleSidebarLeave}
-				onwheel={handleSidebarWheel}
+				onpointerdown={(e) => handlePointerDown(sidebarView, false, e)}
+				onpointermove={(e) => handlePointerMove(sidebarView, false, e)}
+				onpointerup={() => handlePointerUp(sidebarView)}
+				onpointerleave={() => (sidebarView.hoveredId = null)}
+				onwheel={(e) => handleWheel(sidebarView, e)}
 			></canvas>
 		</div>
 	</div>
@@ -1232,23 +1150,14 @@
 							aria-label="Close graph view"
 							onclick={closeModal}
 						>
-							<svg
-								xmlns="http://www.w3.org/2000/svg"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								class="svg-icon"
-							>
+							<Icon>
 								<line x1="18" y1="6" x2="6" y2="18" /><line
 									x1="6"
 									y1="6"
 									x2="18"
 									y2="18"
 								/>
-							</svg>
+							</Icon>
 						</button>
 					</div>
 				</div>

@@ -28,7 +28,7 @@ export interface GraphAnimation {
 	/** Human-readable name shown in the plugin's settings dropdown. */
 	label: string;
 	/** Seconds between cycles for this animation specifically. Optional —
-	 * falls back to the shared ANIMATION_INTERVAL_SECONDS (graphConfig.ts)
+	 * falls back to the shared ANIMATION_INTERVAL_SECONDS (exportData.ts)
 	 * when omitted, so most animations don't need to set this at all. */
 	intervalSeconds?: number;
 	/** (Re)starts the effect — called once per animation cycle. */

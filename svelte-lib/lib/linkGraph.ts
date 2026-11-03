@@ -1,14 +1,4 @@
-// import.meta.glob instead of a static `import ... from "$lib/links.json"`:
-// a static import fails the whole Vite build if links.json doesn't exist yet
-// (e.g. right after updating the plugin's svelte-lib files but before the
-// very first export has run, or a partial/out-of-sync file update). The
-// glob form simply returns an empty result set instead of erroring.
-const linksModules = import.meta.glob("./links.json", {
-	eager: true,
-}) as Record<string, { default?: Record<string, string[]> }>;
-
-const linksData: Record<string, string[]> =
-	Object.values(linksModules)[0]?.default ?? {};
+import { LINKS } from "./exportData";
 
 export interface LinkEdge {
 	source: string;
@@ -29,7 +19,7 @@ export function getLinkEdges(): LinkEdge[] {
 	const edges: LinkEdge[] = [];
 	const seen = new Set<string>();
 
-	for (const [source, targets] of Object.entries(linksData)) {
+	for (const [source, targets] of Object.entries(LINKS)) {
 		const s = normalize(source);
 		for (const rawTarget of targets) {
 			const t = normalize(rawTarget);
