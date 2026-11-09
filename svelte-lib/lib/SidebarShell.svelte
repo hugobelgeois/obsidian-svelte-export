@@ -27,16 +27,42 @@
 		headerAfter,
 		children,
 	}: Props = $props();
+
+	/** Must match the slide-out animation's duration in layout.css. */
+	const CLOSE_ANIMATION_MS = 200;
+
+	// On mobile an open sidebar is a fixed overlay, but a collapsed one is
+	// back in the flex row (at width 0). Switching straight to collapsed
+	// would drop it out of the overlay in the same frame, so it couldn't
+	// animate away. Instead it stays an open overlay for CLOSE_ANIMATION_MS
+	// with `.is-closing` (which slides it off-screen), then collapses for
+	// real. Desktop has no slide-out (its width transition handles that).
+	let closing = $state(false);
+	let wasOpen = false;
+	$effect(() => {
+		if (!collapsed) {
+			wasOpen = true;
+			closing = false;
+			return;
+		}
+		if (!wasOpen) return;
+		wasOpen = false;
+		if (window.innerWidth > 768) return;
+		closing = true;
+		const timer = setTimeout(() => (closing = false), CLOSE_ANIMATION_MS);
+		return () => clearTimeout(timer);
+	});
+
+	let shown = $derived(!collapsed || closing);
 </script>
 
 <div
 	class="workspace-split mod-horizontal mod-sidedock mod-{side}-split"
-	class:is-collapsed={collapsed}
-	style="min-width:{collapsed ? '0' : '200px'};width:{collapsed
-		? '0'
-		: '200px'};"
+	class:is-collapsed={!shown}
+	class:is-closing={closing}
+	style="min-width:{shown ? '200px' : '0'};width:{shown ? '200px' : '0'};"
 >
-	{#if !collapsed}
+	{#if shown}
 		<div class="nav-header">
 			<div class="nav-buttons-container">
 				{@render headerBefore?.()}

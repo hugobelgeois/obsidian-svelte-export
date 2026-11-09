@@ -301,6 +301,34 @@ a { text-decoration: none; color: inherit; }
    floating-button behavior itself is universal — see above — so it
    applies on desktop too.) */
 @media (max-width: 768px) {
+  /* No width transition here: an open sidebar is a fixed overlay and a
+     collapsed one sits in the flex row, so animating the width would play
+     in-flow and shove the note column aside. The overlay slides in/out
+     instead; SidebarShell.svelte keeps it an overlay (`.is-closing`) until
+     the slide-out is done, and only then collapses it. Keep the 0.2s in
+     sync with CLOSE_ANIMATION_MS there. */
+  .workspace-split.mod-sidedock {
+    transition: none;
+  }
+
+  .workspace-split.mod-left-split:not(.is-collapsed) {
+    animation: sidebar-in-left 0.2s ease;
+  }
+  .workspace-split.mod-right-split:not(.is-collapsed) {
+    animation: sidebar-in-right 0.2s ease;
+  }
+  .workspace-split.mod-left-split.is-closing {
+    animation: sidebar-out-left 0.2s ease forwards;
+  }
+  .workspace-split.mod-right-split.is-closing {
+    animation: sidebar-out-right 0.2s ease forwards;
+  }
+
+  @keyframes sidebar-in-left { from { transform: translateX(-100%); } }
+  @keyframes sidebar-in-right { from { transform: translateX(100%); } }
+  @keyframes sidebar-out-left { to { transform: translateX(-100%); } }
+  @keyframes sidebar-out-right { to { transform: translateX(100%); } }
+
   .workspace-split.mod-sidedock:not(.is-collapsed) {
     position: fixed;
     top: 0;

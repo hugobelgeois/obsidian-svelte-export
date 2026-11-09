@@ -95,6 +95,18 @@
 		if (window.innerWidth <= 768) leftCollapsed = true;
 	}
 
+	// On mobile an open sidebar overlays the note, leaving only a strip of it
+	// visible — tapping that strip closes the sidebar(s), like tapping the
+	// scrim behind a drawer. The tap is swallowed (returns true) so it
+	// doesn't also follow a link that happened to be under the finger.
+	function collapseSidebarsOnMobile(): boolean {
+		if (window.innerWidth > 768) return false;
+		if (leftCollapsed && rightCollapsed) return false;
+		leftCollapsed = true;
+		rightCollapsed = true;
+		return true;
+	}
+
 	onMount(() => {
 		document.body.classList.add(
 			"mod-windows",
@@ -152,7 +164,7 @@
 				collapsed={leftCollapsed}
 				toggleCollapsed={() => (leftCollapsed = !leftCollapsed)}
 			/>
-			<Body {children} />
+			<Body {children} onContentClick={collapseSidebarsOnMobile} />
 			{#if !onGraphPage}
 				<RightSidebar
 					{theme}
