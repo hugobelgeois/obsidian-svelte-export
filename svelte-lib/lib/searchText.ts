@@ -1,3 +1,5 @@
+import { excerpt, stripDiacritics } from "./shared";
+
 /** One note in static/search.json — written by writeSearchIndex() in the
  * plugin's src/siteFiles.ts. */
 export interface SearchEntry {
@@ -28,10 +30,7 @@ export function fold(original: string): FoldedText {
 				? c >= 65 && c <= 90
 					? String.fromCharCode(c + 32)
 					: original[i]!
-				: original[i]!
-						.normalize("NFD")
-						.replace(/[̀-ͯ]/g, "")
-						.toLowerCase();
+				: stripDiacritics(original[i]!).toLowerCase();
 		folded += f;
 		for (let k = 0; k < f.length; k++) sourceIndex.push(i);
 	}
@@ -76,17 +75,54 @@ export function search(
 	limit = 30,
 	context = 40,
 ): SearchHit[] {
-	const words = foldText(query).split(/\s+/).filter(Boolean);
+	return rank(findMatches(notes, foldText(query)), limit, context);
+}
+
+/**
+ * search() for a search box: while the query only grows ("dra" → "drag"),
+ * just the notes the previous query matched are searched again — every
+ * word of the new query contains its counterpart in the old one, so no
+ * other note can match it.
+ */
+export class Searcher {
+	private lastQuery = "";
+	private lastMatches: PreparedEntry[];
+
+	constructor(private readonly notes: PreparedEntry[]) {
+		this.lastMatches = notes;
+	}
+
+	search(query: string, limit = 30, context = 40): SearchHit[] {
+		const folded = foldText(query);
+		const pool =
+			this.lastQuery && folded.startsWith(this.lastQuery)
+				? this.lastMatches
+				: this.notes;
+		const matches = findMatches(pool, folded);
+		this.lastQuery = folded.trim() ? folded : "";
+		this.lastMatches = this.lastQuery
+			? matches.map((m) => m.prepared)
+			: this.notes;
+		return rank(matches, limit, context);
+	}
+}
+
+interface Match {
+	prepared: PreparedEntry;
+	score: number;
+	/** Where the first word found in the text is (-1: none is). */
+	at: number;
+	length: number;
+}
+
+/** Every note in `notes` matching each word of the (folded) query. */
+function findMatches(notes: PreparedEntry[], folded: string): Match[] {
+	const words = folded.split(/\s+/).filter(Boolean);
 	if (!words.length) return [];
 
-	const matches: {
-		entry: SearchEntry;
-		score: number;
-		/** Where the first word found in the text is (-1: none is). */
-		at: number;
-		length: number;
-	}[] = [];
-	for (const { entry, title, text } of notes) {
+	const matches: Match[] = [];
+	for (const prepared of notes) {
+		const { title, text } = prepared;
 		let found = true;
 		let inTitle = true;
 		let occurrences = 0;
@@ -113,28 +149,45 @@ export function search(
 		}
 		if (!found) continue;
 		matches.push({
-			entry,
+			prepared,
 			score: (inTitle ? 1_000_000 : 0) + occurrences,
 			at,
 			length,
 		});
 	}
-	// Snippets only for the hits that are shown.
-	return matches
-		.sort((a, b) => b.score - a.score)
-		.slice(0, limit)
-		.map(({ entry, at, length }) => ({
+	return matches;
+}
+
+/** The best `limit` matches, name matches first, then by how often the
+ * words occur — with snippets, worked out only for those. */
+function rank(matches: Match[], limit: number, context: number): SearchHit[] {
+	return topMatches(matches, limit).map(({ prepared: { entry }, at, length }) => ({
 			route: entry.route,
 			title: entry.title,
 			snippet:
 				at === -1
-					? [excerptStart(entry.text, context * 2), "", ""]
+					? [excerpt(entry.text, context * 2), "", ""]
 					: around(fold(entry.text), at, length, context),
 		}));
 }
 
-function excerptStart(text: string, length: number): string {
-	return text.length > length ? text.slice(0, length) + "…" : text;
+/**
+ * The `limit` highest-scoring matches, best first, ties in their original
+ * order — what a (stable) sort then slice gives, without sorting every
+ * match for a short list: once the list is full, a match only gets in by
+ * beating its last one, which most don't.
+ */
+function topMatches(matches: Match[], limit: number): Match[] {
+	const top: Match[] = [];
+	if (limit <= 0) return top;
+	for (const m of matches) {
+		if (top.length === limit && m.score <= top[limit - 1]!.score) continue;
+		let i = top.length;
+		while (i > 0 && top[i - 1]!.score < m.score) i--;
+		top.splice(i, 0, m);
+		if (top.length > limit) top.pop();
+	}
+	return top;
 }
 
 /** [before, match, after] in the original text, for a match at folded

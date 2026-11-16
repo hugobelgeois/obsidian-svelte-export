@@ -1,4 +1,4 @@
-import { BASE_PATH_SENTINEL } from "../svelte-lib/lib/shared";
+import { BASE_PATH_SENTINEL, stripDiacritics } from "../svelte-lib/lib/shared";
 
 export const IMAGE_EXTENSIONS = new Set([
 	"png",
@@ -10,9 +10,14 @@ export const IMAGE_EXTENSIONS = new Set([
 	"avif",
 ]);
 
+/** Whether `file` is a note (Markdown) — not an image or other file. */
+export function isNote(file: { extension: string }): boolean {
+	return file.extension === "md";
+}
+
 /** Whether the export handles `file` at all: notes and images. */
 export function isExportable(file: { extension: string }): boolean {
-	return file.extension === "md" || IMAGE_EXTENSIONS.has(file.extension);
+	return isNote(file) || IMAGE_EXTENSIONS.has(file.extension);
 }
 
 /** Whether vault path `p` is `ancestor` itself or somewhere under it. */
@@ -20,14 +25,12 @@ export function isWithin(p: string, ancestor: string): boolean {
 	return p === ancestor || p.startsWith(ancestor + "/");
 }
 
-/** Whether vault path `p` is in `paths`, or under one of them — one lookup
- * per folder level of `p`, however many `paths` there are. */
-export function isWithinAny(p: string, paths: Set<string>): boolean {
-	if (paths.has(p)) return true;
-	for (let i = p.lastIndexOf("/"); i > 0; i = p.lastIndexOf("/", i - 1)) {
-		if (paths.has(p.slice(0, i))) return true;
+/** Adds every folder vault path `p` is under ("A/B/c.md" → "A", "A/B")
+ * to `into`. */
+export function addAncestors(p: string, into: Set<string>): void {
+	for (let i = p.indexOf("/"); i !== -1; i = p.indexOf("/", i + 1)) {
+		into.add(p.slice(0, i));
 	}
-	return false;
 }
 
 /** File extension → MIME type, for the files an export serves or inlines. */
@@ -55,12 +58,15 @@ export function mimeTypeOf(name: string): string | undefined {
 }
 
 // Shared with the exported site — defined once, in svelte-lib/lib/shared.ts.
-export { BASE_PATH_SENTINEL, COLOR_MODE_KEY } from "../svelte-lib/lib/shared";
-
-/** Strip diacritics (é→e, è→e, ç→c, …). */
-export function stripDiacritics(str: string): string {
-	return str.normalize("NFD").replace(/[̀-ͯ]/g, "");
-}
+export {
+	BASE_PATH_SENTINEL,
+	COLOR_MODE_KEY,
+	excerpt,
+	foldersFirst,
+	isWithinAny,
+	stripDiacritics,
+	withSlash,
+} from "../svelte-lib/lib/shared";
 
 /**
  * Slugify arbitrary text into a URL/id-safe token (heading ids). Accents
@@ -92,15 +98,11 @@ export function staticFilePath(vaultRelativePath: string): string {
 		.join("/");
 }
 
-/** Site URL (base-path sentinel included) of a file at staticFilePath(). */
-export function staticFileUrl(vaultRelativePath: string): string {
+/** Site URL (base-path sentinel included) of a file served at `staticPath`
+ * — a path staticFilePath() already produced, used as-is. */
+export function staticFileUrl(staticPath: string): string {
 	return (
-		BASE_PATH_SENTINEL +
-		"/" +
-		staticFilePath(vaultRelativePath)
-			.split("/")
-			.map(encodeURIComponent)
-			.join("/")
+		BASE_PATH_SENTINEL + "/" + staticPath.split("/").map(encodeURIComponent).join("/")
 	);
 }
 

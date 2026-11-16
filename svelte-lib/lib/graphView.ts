@@ -46,23 +46,28 @@ export function createView(): View {
 	};
 }
 
-/** Actual bounding box of every node's current position (a default one
- * when there are none). */
-function computeBounds(nodes: GNode[]) {
-	const bounds = nodeBounds(nodes);
+/** Actual bounding box of the current position of every `include`d node
+ * (a default one when there are none). */
+function computeBounds(nodes: GNode[], include: (n: GNode) => boolean) {
+	const bounds = nodeBounds(nodes, include);
 	return isFinite(bounds.minX)
 		? bounds
 		: { minX: -50, minY: -50, maxX: 50, maxY: 50 };
 }
 
 /**
- * Fit the view so every node is visible (3), based on their real
- * bounding box rather than an assumed fixed area. Only updates `fitScale`
- * once the user zoomed/panned by hand, unless `force`d.
+ * Fit the view so every `include`d node is visible (3), based on their
+ * real bounding box rather than an assumed fixed area. Only updates
+ * `fitScale` once the user zoomed/panned by hand, unless `force`d.
  */
-export function fitView(view: View, nodes: GNode[], force = false) {
+export function fitView(
+	view: View,
+	nodes: GNode[],
+	include: (n: GNode) => boolean,
+	force = false,
+) {
 	if (view.width <= 0 || view.height <= 0) return;
-	const { minX, minY, maxX, maxY } = computeBounds(nodes);
+	const { minX, minY, maxX, maxY } = computeBounds(nodes, include);
 	const w = Math.max(maxX - minX, 1);
 	const h = Math.max(maxY - minY, 1);
 	const margin = 28;
@@ -104,18 +109,21 @@ export function toWorld(view: View, clientX: number, clientY: number) {
 	};
 }
 
-/** The node closest to a world position, within a few screen pixels. */
+/** The `visible` node closest to a world position, within a few screen
+ * pixels — a node that isn't drawn can't be hovered, dragged or clicked. */
 export function nodeAt(
 	view: View,
 	nodes: GNode[],
 	wx: number,
 	wy: number,
+	visible: (n: GNode) => boolean,
 ): GNode | null {
 	const hitR = 10 / view.scale;
 	let best: GNode | null = null;
 	// Squared distances — same order, no square root per node.
 	let bestDist = hitR * hitR;
 	for (const n of nodes) {
+		if (!visible(n)) continue;
 		const dx = n.x - wx;
 		const dy = n.y - wy;
 		const d = dx * dx + dy * dy;

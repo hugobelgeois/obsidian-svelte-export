@@ -44,9 +44,8 @@ Routes are `/` + `sanitizeRoutePath(vault path)` (accents stripped, unsafe chars
 
 ### Caching and state files (in the destination folder)
 
-- `.export-cache.json` — vault path → mtime; unchanged notes are skipped.
-- `.export-plugins.json` — per-page plugin ids, assets, `deps` + `depsKey` (`dependencyKey()` in `noteRenderer.ts`: link targets' existence/export status, embed mtimes, unresolved links). A changed key forces a re-render even if the note didn't change. Also stores `pageFormat` = `[PAGE_FORMAT_VERSION, siteInfo]`.
-- `.export-search.json` — note text, so cached notes stay searchable.
+- `.export-cache.json` — vault path → mtime (notes and images); unchanged notes are skipped. Kept small and separate: the settings tab reads it (✓ marks) and "Clear cache" deletes it. Invalidating a page = deleting its entry here.
+- `.export-pages.json` — one record per note's page (`PageState` in `exportState.ts`): linked routes (`src/lib/links.json` is derived from them), text (search index), plugin ids, assets, css, `deps` + `depsKey` (`dependencyKey()` in `noteRenderer.ts`: link targets' existence/export status, embed mtimes, unresolved links, anchors). A changed key forces a re-render even if the note didn't change. Also stores integration signatures, captured runtime CSS and `pageFormat` = `[PAGE_FORMAT_VERSION, siteInfo]`. A note is up to date only with both a current mtime entry and a page record. (Replaced `.export-plugins.json` + `.export-search.json`, which are deleted on export.)
 - `.svelte-lib-files.json` — files copied from `svelte-lib/` last time; files no longer in `svelte-lib/` are deleted from the export.
 
 Rules when changing things:

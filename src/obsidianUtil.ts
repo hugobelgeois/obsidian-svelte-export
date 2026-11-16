@@ -104,12 +104,30 @@ export function writeJsonFile(filePath: string, data: unknown): void {
  * doesn't reload (or rebuild) for files an export rewrote identically.
  */
 export function writeFileIfChanged(filePath: string, content: string): void {
+	if (!fileHolds(filePath, content)) fs.writeFileSync(filePath, content, "utf-8");
+}
+
+/** Whether the file at `filePath` exists and holds exactly `content` — a
+ * different size alone tells it doesn't, without reading it. */
+export function fileHolds(
+	filePath: string,
+	content: string,
+	stat?: fs.Stats | null,
+): boolean {
 	try {
-		if (fs.readFileSync(filePath, "utf-8") === content) return;
+		stat ??= fs.statSync(filePath);
+		return (
+			stat.size === Buffer.byteLength(content, "utf-8") &&
+			fs.readFileSync(filePath, "utf-8") === content
+		);
 	} catch {
-		// missing or unreadable — written below
+		return false; // missing or unreadable
 	}
-	fs.writeFileSync(filePath, content, "utf-8");
+}
+
+/** An error's message, for showing to the user. */
+export function errorMessage(e: unknown): string {
+	return e instanceof Error ? e.message : String(e);
 }
 
 /** Records the mtime of every exported file — see exportState.ts. */

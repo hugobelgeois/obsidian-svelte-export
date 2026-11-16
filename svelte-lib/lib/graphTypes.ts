@@ -13,6 +13,9 @@ export interface GNode {
 	fx: number | null;
 	fy: number | null;
 	degree: number;
+	/** Every node it's directly linked to — the nodes themselves, so
+	 * walking the graph needs no id lookups. */
+	neighbors: GNode[];
 	/** Progressive reveal (standalone page only). Always true outside
 	 * standalone mode. */
 	revealed: boolean;
@@ -24,14 +27,31 @@ export interface GNode {
 	dimAlpha: number;
 }
 
-/** Bounding box of every node's current position — infinite (min > max)
- * when there are no nodes. */
-export function nodeBounds(nodes: GNode[]) {
+/**
+ * A random revealed node (each equally likely), or null if none is. A few
+ * random picks first — outside the standalone page's progressive reveal,
+ * every node is revealed — and only if they all miss, a pick among the
+ * revealed ones, rather than listing them on every animation tick.
+ */
+export function randomRevealedNode(nodes: GNode[]): GNode | null {
+	if (!nodes.length) return null;
+	for (let attempt = 0; attempt < 8; attempt++) {
+		const n = nodes[Math.floor(Math.random() * nodes.length)]!;
+		if (n.revealed) return n;
+	}
+	const pool = nodes.filter((n) => n.revealed);
+	return pool[Math.floor(Math.random() * pool.length)] ?? null;
+}
+
+/** Bounding box of the current position of every node (`include`d, if
+ * given) — infinite (min > max) when there are none. */
+export function nodeBounds(nodes: GNode[], include?: (n: GNode) => boolean) {
 	let minX = Infinity,
 		minY = Infinity,
 		maxX = -Infinity,
 		maxY = -Infinity;
 	for (const n of nodes) {
+		if (include && !include(n)) continue;
 		if (n.x < minX) minX = n.x;
 		if (n.x > maxX) maxX = n.x;
 		if (n.y < minY) minY = n.y;

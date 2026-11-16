@@ -25,20 +25,19 @@ function makeGraph(n: number) {
 		fx: null,
 		fy: null,
 		degree: 0,
+		neighbors: [],
 		revealed: true,
 		revealedAt: null,
 		dimAlpha: 1,
 	}));
-	const index = new Map(nodes.map((node) => [node.id, node]));
-	const adjacency = new Map(nodes.map((node) => [node.id, [] as string[]]));
 	const links: { source: GNode; target: GNode }[] = [];
 	for (let i = 1; i < n; i++) {
 		const j = Math.floor((i - 1) / 2);
 		links.push({ source: nodes[i]!, target: nodes[j]! });
-		adjacency.get(`n${i}`)!.push(`n${j}`);
-		adjacency.get(`n${j}`)!.push(`n${i}`);
+		nodes[i]!.neighbors.push(nodes[j]!);
+		nodes[j]!.neighbors.push(nodes[i]!);
 	}
-	seedPositions(nodes, (id) => adjacency.get(id) ?? [], index);
+	seedPositions(nodes);
 	return { nodes, links };
 }
 

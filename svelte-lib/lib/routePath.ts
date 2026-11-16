@@ -1,10 +1,6 @@
 import { base } from "$app/paths";
 
-/** `route` with the trailing slash every note's route has on the site
- * (siteTree/Graph node ids, prerendered page URLs). */
-export function withSlash(route: string): string {
-	return route.endsWith("/") ? route : route + "/";
-}
+export { withSlash } from "./shared";
 
 /**
  * Converts a browser pathname (from `$page.url.pathname`, which includes

@@ -1,10 +1,11 @@
 import * as fs from "fs";
-import { Notice, Plugin, TAbstractFile, TFile } from "obsidian";
+import { debounce, Notice, Plugin, TAbstractFile, TFile } from "obsidian";
 import * as path from "path";
-import { isExportable, isWithin } from "./constants";
+import { addAncestors, isExportable, isWithin } from "./constants";
 import { ExportProgressModal } from "./exportModal";
 import { SiteExporter } from "./exporter";
 import {
+	errorMessage,
 	EXPORT_CACHE_FILE,
 	getVaultBasePath,
 	pluginFolderPath,
@@ -12,9 +13,49 @@ import {
 } from "./obsidianUtil";
 import {
 	DEFAULT_SETTINGS,
+	PATH_LISTS,
 	SvelteExporterSettings,
 	SvelteExporterSettingTab,
 } from "./settings";
+
+/** A stored path list's entries and every folder they're under, for O(1)
+ * lookups — see pathIndex(). */
+class PathIndex {
+	readonly paths: Set<string>;
+	readonly ancestors = new Set<string>();
+	/** The list's length when this was last brought up to date. */
+	length: number;
+
+	constructor(private readonly list: string[]) {
+		this.paths = new Set(list);
+		for (const p of list) addAncestors(p, this.ancestors);
+		this.length = list.length;
+	}
+
+	/** Records `p`, just pushed onto the list. */
+	add(p: string): void {
+		this.paths.add(p);
+		addAncestors(p, this.ancestors);
+		this.length = this.list.length;
+	}
+}
+
+/** Built once per list, kept while it's the same array with the same
+ * length. Every change to a list either replaces the array (remapping,
+ * the settings tab's removals and cascades, loading) or pushes onto it
+ * (then the length differs, or add() was called) — sorting it in place
+ * changes nothing that's indexed. So a folder move's k rename events cost
+ * one O(n) index build, not k O(n) scans. */
+const pathIndexes = new WeakMap<string[], PathIndex>();
+
+function pathIndex(list: string[]): PathIndex {
+	let index = pathIndexes.get(list);
+	if (!index || index.length !== list.length) {
+		index = new PathIndex(list);
+		pathIndexes.set(list, index);
+	}
+	return index;
+}
 
 export default class SvelteExporterPlugin extends Plugin {
 	settings: SvelteExporterSettings;
@@ -38,9 +79,7 @@ export default class SvelteExporterPlugin extends Plugin {
 		// vault too, and none of those are actually new/moved.
 		this.app.workspace.onLayoutReady(() => {
 			this.registerEvent(
-				this.app.vault.on("create", (file) => {
-					void this.onFileCreated(file);
-				}),
+				this.app.vault.on("create", (file) => this.onFileCreated(file)),
 			);
 			// Obsidian implements drag-and-drop moves (and folder renames)
 			// as a "rename" event (oldPath → file.path), NOT "create" — by
@@ -48,24 +87,40 @@ export default class SvelteExporterPlugin extends Plugin {
 			// different folder, so this has to be handled too, not just
 			// brand new files.
 			this.registerEvent(
-				this.app.vault.on("rename", (file, oldPath) => {
-					void this.onFileRenamed(file, oldPath);
-				}),
+				this.app.vault.on("rename", (file, oldPath) =>
+					this.onFileRenamed(file, oldPath),
+				),
 			);
 		});
 	}
 
-	private async onFileCreated(file: TAbstractFile): Promise<void> {
-		if (this.applyParentInheritance(file)) await this.saveSettings();
+	onunload() {
+		// A change from a vault event just before the plugin is disabled
+		// (or Obsidian closes) still gets saved.
+		this.saveSoon.run();
 	}
 
-	private async onFileRenamed(
-		file: TAbstractFile,
-		oldPath: string,
-	): Promise<void> {
+	/**
+	 * Saves settings changed by vault events, debounced: moving or renaming
+	 * a folder fires one "rename" per file in it, and each would otherwise
+	 * sort both path lists and rewrite data.json — k writes for k files.
+	 * The settings in memory (what an export or the settings tab reads)
+	 * are up to date right away.
+	 */
+	private readonly saveSoon = debounce(
+		() => void this.saveSettings(),
+		500,
+		true,
+	);
+
+	private onFileCreated(file: TAbstractFile): void {
+		if (this.applyParentInheritance(file)) this.saveSoon();
+	}
+
+	private onFileRenamed(file: TAbstractFile, oldPath: string): void {
 		let changed = this.remapStoredPaths(oldPath, file.path);
 		if (this.applyParentInheritance(file)) changed = true;
-		if (changed) await this.saveSettings();
+		if (changed) this.saveSoon();
 	}
 
 	/**
@@ -78,14 +133,20 @@ export default class SvelteExporterPlugin extends Plugin {
 	 */
 	private remapStoredPaths(oldPath: string, newPath: string): boolean {
 		let changed = false;
-		const remap = (paths: string[]): string[] =>
-			paths.map((p) => {
+		for (const list of PATH_LISTS) {
+			// Nothing at or under oldPath: the usual case — e.g. each file
+			// of a moved folder gets its own event, after the folder's
+			// already remapped them all — answered without a scan.
+			const index = pathIndex(this.settings[list]);
+			if (!index.paths.has(oldPath) && !index.ancestors.has(oldPath)) {
+				continue;
+			}
+			this.settings[list] = this.settings[list].map((p) => {
 				if (!isWithin(p, oldPath)) return p;
 				changed = true;
 				return newPath + p.slice(oldPath.length);
 			});
-		this.settings.selectedPaths = remap(this.settings.selectedPaths);
-		this.settings.hiddenPaths = remap(this.settings.hiddenPaths);
+		}
 		return changed;
 	}
 
@@ -105,19 +166,14 @@ export default class SvelteExporterPlugin extends Plugin {
 		if (parentPath === undefined) return false;
 
 		let changed = false;
-		if (
-			this.settings.selectedPaths.includes(parentPath) &&
-			!this.settings.selectedPaths.includes(file.path)
-		) {
-			this.settings.selectedPaths.push(file.path);
-			changed = true;
-		}
-		if (
-			this.settings.hiddenPaths.includes(parentPath) &&
-			!this.settings.hiddenPaths.includes(file.path)
-		) {
-			this.settings.hiddenPaths.push(file.path);
-			changed = true;
+		for (const list of PATH_LISTS) {
+			const paths = this.settings[list];
+			const index = pathIndex(paths);
+			if (index.paths.has(parentPath) && !index.paths.has(file.path)) {
+				paths.push(file.path);
+				index.add(file.path);
+				changed = true;
+			}
 		}
 		return changed;
 	}
@@ -151,9 +207,7 @@ export default class SvelteExporterPlugin extends Plugin {
 			console.error("[SvelteExporter] Export failed:", e);
 			progressModal.close();
 			new Notice(
-				`❌ export failed: ${
-					e instanceof Error ? e.message : String(e)
-				}. See console for details.`,
+				`❌ export failed: ${errorMessage(e)}. See console for details.`,
 			);
 		} finally {
 			this.exporting = false;
@@ -261,8 +315,7 @@ export default class SvelteExporterPlugin extends Plugin {
 	async saveSettings() {
 		// Sorted so data.json diffs stay minimal regardless of the order
 		// paths were toggled in.
-		this.settings.selectedPaths.sort();
-		this.settings.hiddenPaths.sort();
+		for (const list of PATH_LISTS) this.settings[list].sort();
 		await this.saveData(this.settings);
 	}
 }

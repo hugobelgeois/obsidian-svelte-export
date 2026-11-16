@@ -7,7 +7,7 @@
  * exporter.ts/settings.ts.
  */
 
-interface OpenDialogOptions {
+export interface OpenDialogOptions {
 	title: string;
 	properties: string[];
 	filters?: { name: string; extensions: string[] }[];

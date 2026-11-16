@@ -8,8 +8,8 @@ import {
 	TextComponent,
 } from "obsidian";
 import * as path from "path";
-import { IMAGE_EXTENSIONS, routeOf } from "./constants";
-import { showOpenDialogSync } from "./electronDialog";
+import { IMAGE_EXTENSIONS, isNote, routeOf } from "./constants";
+import { OpenDialogOptions, showOpenDialogSync } from "./electronDialog";
 import { FileSelector } from "./fileSelector";
 import type SvelteExporterPlugin from "./main";
 import {
@@ -83,8 +83,21 @@ export const DEFAULT_SETTINGS: SvelteExporterSettings = {
 	disabledIntegrations: [],
 };
 
+/** The two stored path lists: "selectedPaths" (Export) and "hiddenPaths"
+ * (Visible) — handled the same way by the file selector and on renames. */
+export type PathList = "selectedPaths" | "hiddenPaths";
+export const PATH_LISTS: PathList[] = ["selectedPaths", "hiddenPaths"];
+
 /** Settings stored as plain text fields. */
 type TextSettingKey = "siteUrl" | "siteLanguage" | "faviconPath";
+/** Settings shown as a single toggle. */
+type ToggleSettingKey = "openAfterExport" | "exportGraphColors";
+/** Settings picked from a dropdown — saved as the chosen option's value. */
+type DropdownSettingKey =
+	| "selectedTheme"
+	| "defaultColorMode"
+	| "defaultPage"
+	| "graphAnimationType";
 
 export class SvelteExporterSettingTab extends PluginSettingTab {
 	plugin: SvelteExporterPlugin;
@@ -156,22 +169,17 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 						"Open a folder picker to choose the destination",
 					)
 					.onClick(() => {
-						try {
-							const chosen = showOpenDialogSync({
+						const chosen = this.openDialog(
+							{
 								title: "Select export destination folder",
 								properties: ["openDirectory", "createDirectory"],
-							})?.[0];
-							if (chosen) {
-								this.plugin.settings.destinationPath = chosen;
-								void this.plugin.saveSettings();
-								destText.setValue(chosen);
-							}
-						} catch (e) {
-							new Notice(
-								"⚠️ could not open folder picker. Set the path manually.",
-							);
-							console.error("[SvelteExporter] Browse error:", e);
-						}
+							},
+							"⚠️ could not open folder picker. Set the path manually.",
+						);
+						if (chosen === null) return;
+						this.plugin.settings.destinationPath = chosen;
+						void this.plugin.saveSettings();
+						destText.setValue(chosen);
 					});
 			});
 
@@ -197,20 +205,12 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 			moment.locale(),
 		);
 
-		// ── Open after export ─────────────────────────────────────────────
-		new Setting(containerEl)
-			.setName("Open destination after export")
-			.setDesc(
-				"Automatically open the destination folder in the system file explorer once the export finishes.",
-			)
-			.addToggle((toggle) =>
-				toggle
-					.setValue(this.plugin.settings.openAfterExport)
-					.onChange(async (value) => {
-						this.plugin.settings.openAfterExport = value;
-						await this.plugin.saveSettings();
-					}),
-			);
+		this.addToggleSetting(
+			containerEl,
+			"openAfterExport",
+			"Open destination after export",
+			"Automatically open the destination folder in the system file explorer once the export finishes.",
+		);
 	}
 
 	/** Theme, favicon and default color mode of the exported site. */
@@ -224,22 +224,15 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		};
 		for (const t of (this.themes ??= this.readThemes())) themeOptions[t] = t;
 
-		new Setting(containerEl)
-			.setName("Site theme")
-			.setDesc(
-				"Choose which Obsidian theme to use for the exported site. " +
-					`Themes are read from your vault's ${this.app.vault.configDir}/themes/ folder.`,
-			)
-			.addDropdown((drop) => {
-				for (const [value, label] of Object.entries(themeOptions)) {
-					drop.addOption(value, label);
-				}
-				drop.setValue(this.plugin.settings.selectedTheme || "__none__");
-				drop.onChange(async (value) => {
-					this.plugin.settings.selectedTheme = value;
-					await this.plugin.saveSettings();
-				});
-			});
+		this.addDropdownSetting(
+			containerEl,
+			"selectedTheme",
+			"Site theme",
+			"Choose which Obsidian theme to use for the exported site. " +
+				`Themes are read from your vault's ${this.app.vault.configDir}/themes/ folder.`,
+			themeOptions,
+			"__none__",
+		);
 
 		const favicon = this.addTextSetting(
 			containerEl,
@@ -266,23 +259,16 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 				});
 		});
 
-		new Setting(containerEl)
-			.setName("Default color mode")
-			.setDesc(
-				"Which mode the exported site starts in when a visitor first " +
-					"loads it. They can still switch it themselves from the " +
-					"toggle in the sidebar (or, on the graph page, top-right).",
-			)
-			.addDropdown((drop) => {
-				drop.addOption("dark", "Dark");
-				drop.addOption("light", "Light");
-				drop.setValue(this.plugin.settings.defaultColorMode);
-				drop.onChange(async (value) => {
-					this.plugin.settings.defaultColorMode =
-						value === "light" ? "light" : "dark";
-					await this.plugin.saveSettings();
-				});
-			});
+		this.addDropdownSetting(
+			containerEl,
+			"defaultColorMode",
+			"Default color mode",
+			"Which mode the exported site starts in when a visitor first " +
+				"loads it. They can still switch it themselves from the " +
+				"toggle in the sidebar (or, on the graph page, top-right).",
+			{ dark: "Dark", light: "Light" },
+			"dark",
+		);
 	}
 
 	/** One toggle per supported plugin that's installed. */
@@ -350,42 +336,25 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		// pick any exported note as the site's landing page.
 		const availablePages = this.plugin
 			.resolveFiles(this.plugin.settings.selectedPaths)
-			.filter((f) => f.extension === "md")
+			.filter(isNote)
 			.sort((a, b) => a.path.localeCompare(b.path));
 		for (const file of availablePages) {
 			defaultPageOptions[routeOf(file.path)] = file.path;
 		}
 
-		new Setting(containerEl)
-			.setName("Default page")
-			.setDesc(
-				"What to show when no specific note is requested (i.e. the " +
-					"site's root URL). Choose the welcome screen, the graph " +
-					"view as a full page, or one of the notes selected for " +
-					"export below.",
-			)
-			.addDropdown((drop) => {
-				for (const [value, label] of Object.entries(
-					defaultPageOptions,
-				)) {
-					drop.addOption(value, label);
-				}
-				const current = this.plugin.settings.defaultPage;
-				// Fall back to the default if the previously-chosen page is
-				// no longer part of the export selection.
-				drop.setValue(
-					Object.prototype.hasOwnProperty.call(
-						defaultPageOptions,
-						current,
-					)
-						? current
-						: "",
-				);
-				drop.onChange(async (value) => {
-					this.plugin.settings.defaultPage = value;
-					await this.plugin.saveSettings();
-				});
-			});
+		// Falls back to the welcome screen if the previously-chosen page is
+		// no longer part of the export selection.
+		this.addDropdownSetting(
+			containerEl,
+			"defaultPage",
+			"Default page",
+			"What to show when no specific note is requested (i.e. the " +
+				"site's root URL). Choose the welcome screen, the graph " +
+				"view as a full page, or one of the notes selected for " +
+				"export below.",
+			defaultPageOptions,
+			"",
+		);
 	}
 
 	/** Graph view animation and group colors. */
@@ -393,51 +362,32 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		const animationOptions = (this.animationOptions ??=
 			this.readAnimationOptions());
 
-		new Setting(containerEl)
-			.setName("Graph animation")
-			.setDesc(
-				"In the graph view's big view (popup and full-page), which " +
-					"subtle animation plays every few seconds. Animations are " +
-					"plugin files under svelte-lib/lib/animations/ — add or " +
-					"remove a file there to change what's offered here. " +
-					"Choose \"None\" to disable, or \"Random\" to have each " +
-					"page load pick a different one.",
-			)
-			.addDropdown((drop) => {
-				for (const [value, label] of Object.entries(animationOptions)) {
-					drop.addOption(value, label);
-				}
-				const current = this.plugin.settings.graphAnimationType;
-				drop.setValue(
-					Object.prototype.hasOwnProperty.call(animationOptions, current)
-						? current
-						: "none",
-				);
-				drop.onChange(async (value) => {
-					this.plugin.settings.graphAnimationType = value;
-					await this.plugin.saveSettings();
-				});
-			});
+		this.addDropdownSetting(
+			containerEl,
+			"graphAnimationType",
+			"Graph animation",
+			"In the graph view's big view (popup and full-page), which " +
+				"subtle animation plays every few seconds. Animations are " +
+				"plugin files under svelte-lib/lib/animations/ — add or " +
+				"remove a file there to change what's offered here. " +
+				"Choose \"None\" to disable, or \"Random\" to have each " +
+				"page load pick a different one.",
+			animationOptions,
+			"none",
+		);
 
-		new Setting(containerEl)
-			.setName("Color graph nodes by group")
-			.setDesc(
-				"In the graph view's big view (popup and full-page), color " +
-					"nodes using Obsidian's own graph \"Groups\" " +
-					"(the Graph view's Groups tab, saved in " +
-					`${this.app.vault.configDir}/graph.json) ` +
-					"— a note matching a saved group's query is colored the " +
-					"same way there. Only path:/file:/tag: queries are " +
-					"supported; more complex ones (OR, regex, …) are ignored.",
-			)
-			.addToggle((toggle) =>
-				toggle
-					.setValue(this.plugin.settings.exportGraphColors)
-					.onChange(async (value) => {
-						this.plugin.settings.exportGraphColors = value;
-						await this.plugin.saveSettings();
-					}),
-			);
+		this.addToggleSetting(
+			containerEl,
+			"exportGraphColors",
+			"Color graph nodes by group",
+			"In the graph view's big view (popup and full-page), color " +
+				"nodes using Obsidian's own graph \"Groups\" " +
+				"(the Graph view's Groups tab, saved in " +
+				`${this.app.vault.configDir}/graph.json) ` +
+				"— a note matching a saved group's query is colored the " +
+				"same way there. Only path:/file:/tag: queries are " +
+				"supported; more complex ones (OR, regex, …) are ignored.",
+		);
 	}
 
 	/** The list of custom scripts, plus a picker to add one. */
@@ -609,6 +559,76 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		return { setting, text: textComponent };
 	}
 
+	/** A toggle saved to `key` on every change. */
+	private addToggleSetting(
+		containerEl: HTMLElement,
+		key: ToggleSettingKey,
+		name: string,
+		desc: string,
+	): void {
+		new Setting(containerEl)
+			.setName(name)
+			.setDesc(desc)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings[key])
+					.onChange(async (value) => {
+						this.plugin.settings[key] = value;
+						await this.plugin.saveSettings();
+					}),
+			);
+	}
+
+	/**
+	 * A dropdown of `options` (value → label) saved to `key` on every
+	 * change. Shows `fallback` while the saved value isn't one of the
+	 * options (e.g. a page since deselected, an animation since removed).
+	 */
+	private addDropdownSetting<K extends DropdownSettingKey>(
+		containerEl: HTMLElement,
+		key: K,
+		name: string,
+		desc: string,
+		options: Record<string, string>,
+		fallback: SvelteExporterSettings[K],
+	): void {
+		new Setting(containerEl)
+			.setName(name)
+			.setDesc(desc)
+			.addDropdown((drop) => {
+				drop.addOptions(options);
+				const current = this.plugin.settings[key];
+				drop.setValue(
+					Object.prototype.hasOwnProperty.call(options, current)
+						? current
+						: fallback,
+				);
+				drop.onChange(async (value) => {
+					// Always one of `options` — the caller's valid values.
+					this.plugin.settings[key] = value as SvelteExporterSettings[K];
+					await this.plugin.saveSettings();
+				});
+			});
+	}
+
+	/**
+	 * Opens the system's open dialog; returns the chosen path, or null if
+	 * it was cancelled — or couldn't be opened, after telling the user
+	 * (`failMessage`).
+	 */
+	private openDialog(
+		options: OpenDialogOptions,
+		failMessage: string,
+	): string | null {
+		try {
+			return showOpenDialogSync(options)?.[0] ?? null;
+		} catch (e) {
+			new Notice(failMessage);
+			console.error("[SvelteExporter] Browse error:", e);
+			return null;
+		}
+	}
+
 	/**
 	 * Opens the system's file picker to choose a file inside the vault.
 	 * Returns its vault-relative path, or null — after telling the user why,
@@ -619,23 +639,13 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		filter: { name: string; extensions: string[] },
 		outsideVaultMessage: string,
 	): string | null {
-		try {
-			const chosen = showOpenDialogSync({
-				title,
-				properties: ["openFile"],
-				filters: [filter],
-			})?.[0];
-			if (!chosen) return null;
-			const relative = toVaultRelativePath(
-				getVaultBasePath(this.app),
-				chosen,
-			);
-			if (relative === null) new Notice(outsideVaultMessage);
-			return relative;
-		} catch (e) {
-			new Notice("⚠️ could not open file picker. Set the path manually.");
-			console.error("[SvelteExporter] Browse error:", e);
-			return null;
-		}
+		const chosen = this.openDialog(
+			{ title, properties: ["openFile"], filters: [filter] },
+			"⚠️ could not open file picker. Set the path manually.",
+		);
+		if (chosen === null) return null;
+		const relative = toVaultRelativePath(getVaultBasePath(this.app), chosen);
+		if (relative === null) new Notice(outsideVaultMessage);
+		return relative;
 	}
 }

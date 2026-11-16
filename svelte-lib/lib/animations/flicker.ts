@@ -1,5 +1,5 @@
 import { riseFall } from "../easing";
-import type { GNode } from "../graphTypes";
+import { randomRevealedNode, type GNode } from "../graphTypes";
 import type { GraphAnimation } from "./types";
 
 export const label = "Flicker (random node twinkle)";
@@ -42,9 +42,8 @@ const flicker: GraphAnimation = {
 		// MAX_GAP_MS, force one so the quiet stretch never runs any longer.
 		if (idleMs < MAX_GAP_MS && Math.random() > SPAWN_CHANCE) return;
 
-		const pool = ctx.nodes.filter((n) => n.revealed);
-		if (!pool.length) return;
-		const node = pool[Math.floor(Math.random() * pool.length)];
+		const node = randomRevealedNode(ctx.nodes);
+		if (!node) return;
 		lastSpawnAt = ctx.now;
 		pulses.push({
 			node,

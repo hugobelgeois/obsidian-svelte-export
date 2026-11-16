@@ -1,5 +1,5 @@
 import { riseFall } from "../easing";
-import type { GNode } from "../graphTypes";
+import { randomRevealedNode, type GNode } from "../graphTypes";
 import type { GraphAnimation } from "./types";
 
 export const label = "Raindrop (shrink/grow pulse with pull & push)";
@@ -73,8 +73,9 @@ function currentBeat(local: number, beats: Beat[]): Beat | null {
 	return null;
 }
 
-function spawnDrop(now: number, pool: GNode[]) {
-	const node = pool[Math.floor(Math.random() * pool.length)];
+function spawnDrop(now: number, nodes: GNode[]) {
+	const node = randomRevealedNode(nodes);
+	if (!node) return;
 	const beats: Beat[] = [];
 	let amplitude = 1;
 	for (let i = 0; i < BEAT_COUNT; i++) {
@@ -92,9 +93,6 @@ const raindrop: GraphAnimation = {
 		// forever across a long-open graph view.
 		drops = drops.filter((d) => ctx.now - d.start <= TOTAL_LIFESPAN_MS);
 
-		const pool = ctx.nodes.filter((n) => n.revealed);
-		if (!pool.length) return;
-
 		// Always at least one, up to MAX_SPAWNS_PER_TICK — randomized count each tick, so
 		// it never reads as a strict one-drop-per-tick rhythm.
 		const count =
@@ -102,7 +100,7 @@ const raindrop: GraphAnimation = {
 			Math.floor(
 				Math.random() * (MAX_SPAWNS_PER_TICK - MIN_SPAWNS_PER_TICK + 1),
 			);
-		for (let i = 0; i < count; i++) spawnDrop(ctx.now, pool);
+		for (let i = 0; i < count; i++) spawnDrop(ctx.now, ctx.nodes);
 	},
 
 	getSizeScale(n: GNode, now: number) {

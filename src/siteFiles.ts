@@ -3,10 +3,12 @@ import { moment, Notice, TFile } from "obsidian";
 import * as path from "path";
 import {
 	COLOR_MODE_KEY,
+	isNote,
 	isWithinAny,
 	mimeTypeOf,
 	pageRouteOf,
 	routeOf,
+	withSlash,
 } from "./constants";
 import type { ExportContext } from "./exporter";
 import {
@@ -95,12 +97,17 @@ export function writeSiteData(
 	// sanitized route segment.
 	const nameMap: Record<string, string> = {};
 	for (const file of files) {
-		if (file.extension !== "md") continue;
+		if (!isNote(file)) continue;
 		nameMap[routeOf(file.path)] = file.basename;
 
+		// Stops at the first folder already named: everything above it
+		// was named along with it — each folder is visited once overall,
+		// not once per note beneath it.
 		let parent = file.parent;
 		while (parent && parent.path && parent.path !== "/") {
-			nameMap[routeOf(parent.path)] = parent.name;
+			const route = routeOf(parent.path);
+			if (route in nameMap) break;
+			nameMap[route] = parent.name;
 			parent = parent.parent;
 		}
 	}
@@ -146,7 +153,7 @@ export function defaultPageFiles(
 	// to a page that was never generated.
 	if (!expectedRoutes.has(defaultPage)) return {};
 
-	const target = defaultPage.endsWith("/") ? defaultPage : defaultPage + "/";
+	const target = withSlash(defaultPage);
 	return {
 		"routes/+page.svelte": `<!-- Redirects to ${target} — see +page.ts -->\n`,
 		"routes/+page.ts":
@@ -290,9 +297,7 @@ export function topmostPaths(paths: string[]): string[] {
  * not hidden from the file tree themselves or through a folder. */
 export function listedNotes(files: TFile[], hiddenPaths: string[]): TFile[] {
 	const hidden = new Set(hiddenPaths);
-	return files.filter(
-		(f) => f.extension === "md" && !isWithinAny(f.path, hidden),
-	);
+	return files.filter((f) => isNote(f) && !isWithinAny(f.path, hidden));
 }
 
 /**
@@ -303,12 +308,13 @@ export function listedNotes(files: TFile[], hiddenPaths: string[]): TFile[] {
 export function writeSearchIndex(
 	staticFiles: SyncedFolder,
 	notes: TFile[],
-	searchText: Record<string, string>,
+	/** Vault path → what the export recorded about the note's page. */
+	pages: Record<string, { text: string }>,
 ) {
 	const entries = notes.map((f) => ({
 		route: routeOf(f.path),
 		title: f.basename,
-		text: searchText[f.path] ?? "",
+		text: pages[f.path]?.text ?? "",
 	}));
 	staticFiles.write("search.json", JSON.stringify(entries));
 }

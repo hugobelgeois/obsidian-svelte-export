@@ -2,6 +2,7 @@
 	import { base } from "$app/paths";
 	import { HIDDEN_PATHS } from "$lib/exportData";
 	import Icon from "$lib/Icon.svelte";
+	import { isWithinAny } from "$lib/shared";
 	import { siteTree, type TreeNode } from "$lib/siteTree";
 
 	interface Props {
@@ -14,14 +15,9 @@
 
 	const hiddenPaths = new Set(HIDDEN_PATHS);
 
-	/** Whether the note is hidden itself or through a folder — one lookup
-	 * per folder level, however many paths are hidden. */
+	/** Whether the note is hidden itself or through a folder. */
 	function isHidden(node: TreeNode): boolean {
-		const p = node.path.replace(/\/$/, "");
-		for (let i = p.length; i > 0; i = p.lastIndexOf("/", i - 1)) {
-			if (hiddenPaths.has(p.slice(0, i))) return true;
-		}
-		return false;
+		return isWithinAny(node.path.replace(/\/$/, ""), hiddenPaths);
 	}
 
 	/** The notes `keep` accepts, in the folders holding at least one. */

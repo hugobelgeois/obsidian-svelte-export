@@ -21,8 +21,6 @@ export interface GraphScene {
 	nodes: GNode[];
 	edges: { source: GNode; target: GNode }[];
 	nodeIndex: Map<string, GNode>;
-	/** Node id → ids of every node it's directly linked to. */
-	adjacency: Map<string, string[]>;
 	/** Route of the note being viewed — "" if none. */
 	currentPath: string;
 	/** Current note + its direct links. */
@@ -34,12 +32,14 @@ export interface GraphScene {
 	colors: GraphColors;
 }
 
-/** `id` itself plus every note directly linked to it (empty for null). */
-export function withNeighbors(
-	adjacency: Map<string, string[]>,
-	id: string | null,
-): Set<string> {
-	return id ? new Set([id, ...(adjacency.get(id) ?? [])]) : new Set();
+/** The ids of `node` itself plus every note directly linked to it (empty
+ * for none). */
+export function withNeighbors(node: GNode | null | undefined): Set<string> {
+	const ids = new Set<string>();
+	if (!node) return ids;
+	ids.add(node.id);
+	for (const n of node.neighbors) ids.add(n.id);
+	return ids;
 }
 
 /** Same size formula for every node — only depends on its link count. */
@@ -102,10 +102,13 @@ function updateDimAlpha(n: GNode, target: number, dt: number) {
 
 // ── Frame ────────────────────────────────────────────────────────────────────
 
-/** Scratch positions, reused every frame rather than allocated per node. */
-const p = { x: 0, y: 0 };
-const sp = { x: 0, y: 0 };
-const tp = { x: 0, y: 0 };
+/** Per node (by index in scene.nodes), reused every frame: whether it's
+ * drawn, and where — worked out once per node, not again for each of its
+ * edges (an animation's getOffset() can be costly, e.g. raindrop's loops
+ * over every drop). */
+let shown = new Uint8Array(0);
+let drawX = new Float64Array(0);
+let drawY = new Float64Array(0);
 /** Labels queued while drawing the nodes, drawn after all of them —
  * reused every frame (only the first `labelCount` entries are current). */
 const labelTexts: string[] = [];
@@ -134,6 +137,21 @@ function memoizeLast<A extends unknown[], R>(
 /** withNeighbors() of the hovered node. */
 const neighborsOf = memoizeLast(withNeighbors);
 
+/** Each node's index in `nodes`, and each edge's two ends as such indices
+ * (source at 2k, target at 2k + 1) — worked out once: the component
+ * keeps the same arrays for its whole lifetime. */
+const graphIndices = memoizeLast(
+	(nodes: GNode[], edges: { source: GNode; target: GNode }[]) => {
+		const index = new Map(nodes.map((n, i) => [n, i]));
+		const ends = new Int32Array(edges.length * 2);
+		edges.forEach(({ source, target }, k) => {
+			ends[2 * k] = index.get(source) ?? -1;
+			ends[2 * k + 1] = index.get(target) ?? -1;
+		});
+		return ends;
+	},
+);
+
 /**
  * Which nodes get a name when labels don't depend on degree (sidebar
  * preview, or the big view filtered to linked notes): the current and
@@ -141,30 +159,54 @@ const neighborsOf = memoizeLast(withNeighbors);
  * The more names would be drawn at once, the more transparent each one is,
  * so a heavily-connected note's neighbor labels don't turn into an
  * unreadable block of overlapping text — but never so transparent they
- * stop being "permanently visible".
+ * stop being "permanently visible". Only those candidates are looked at,
+ * not every node.
  */
 const labelledNodes = memoizeLast(
 	(
-		nodes: GNode[],
+		nodeIndex: Map<string, GNode>,
 		neighborIds: Set<string>,
 		showOnlyLinked: boolean,
 		currentPath: string,
 		hoveredId: string | null,
 		isModal: boolean,
 	) => {
-		const visibleIds = showOnlyLinked ? neighborIds : null;
 		const ids = new Set<string>();
-		for (const n of nodes) {
-			if (visibleIds && !visibleIds.has(n.id)) continue;
-			const isCurrent = n.id === currentPath;
-			const isHovered = n.id === hoveredId;
-			const isNearCurrent = isModal && neighborIds.has(n.id);
-			if (isCurrent || isHovered || isNearCurrent) ids.add(n.id);
-		}
+		const add = (id: string) => {
+			if (!nodeIndex.has(id)) return;
+			if (showOnlyLinked && !neighborIds.has(id)) return; // filtered out
+			ids.add(id);
+		};
+		add(currentPath);
+		if (hoveredId) add(hoveredId);
+		if (isModal) neighborIds.forEach(add);
 		const alpha = Math.max(0.55, Math.min(1, 10 / Math.max(ids.size, 1)));
 		return { ids, alpha };
 	},
 );
+
+/**
+ * The opacity of `n`'s label, or null when it gets none: by degree (and
+ * zoom, `zoomBoost`) when `labelled` is null, else only for the nodes in
+ * it (see labelledNodes).
+ */
+function labelAlpha(
+	n: GNode,
+	hoveredId: string | null,
+	labelled: { ids: Set<string>; alpha: number } | null,
+	zoomBoost: number,
+): number | null {
+	// The node under the cursor always gets its full name at full
+	// opacity — degree-based fade and the "many labels at once"
+	// dimming are both about decluttering everything else, not this.
+	if (n.id === hoveredId) return 1;
+	if (!labelled) {
+		const degreeComponent = Math.min(n.degree, 8) / 8; // 0..1
+		const a = Math.min(1, degreeComponent * 0.85 + zoomBoost);
+		return a <= 0.03 ? null : a;
+	}
+	return labelled.ids.has(n.id) ? labelled.alpha : null;
+}
 
 /**
  * Draws `scene` onto `view`'s canvas. `isModal` is the big view (popup or
@@ -183,20 +225,9 @@ export function drawGraph(
 	const ctx = view.canvas.getContext("2d");
 	if (!ctx) return;
 	const { nodes, edges, animation, currentPath, showOnlyLinked } = scene;
-
 	// The animation's positional offset is a big-view-only effect
-	// (standalone page + popup modal, never the small sidebar preview)
-	// and purely visual — it never touches n.x/n.y, so this is the only
-	// place it exists.
-	function place(n: GNode, out: { x: number; y: number }) {
-		out.x = n.x;
-		out.y = n.y;
-		if (!isModal) return;
-		const off = animation?.getOffset?.(n, now);
-		if (!off) return;
-		out.x += off.dx;
-		out.y += off.dy;
-	}
+	// (standalone page + popup modal, never the small sidebar preview).
+	const offsets = isModal ? animation : undefined;
 
 	const dpr = window.devicePixelRatio || 1;
 	const targetW = Math.round(view.width * dpr);
@@ -220,7 +251,7 @@ export function drawGraph(
 	const visibleIds = showOnlyLinked ? neighborIds : null;
 
 	const hovered = view.hoveredId ? scene.nodeIndex.get(view.hoveredId) : null;
-	const linkedToHovered = neighborsOf(scene.adjacency, hovered?.id ?? null);
+	const linkedToHovered = neighborsOf(hovered);
 
 	// Label mode: in the big view with "all notes" shown, every note's
 	// name visibility depends on how many links it has (more links =
@@ -236,7 +267,7 @@ export function drawGraph(
 	const labelled = degreeFade
 		? null
 		: labelledNodes(
-				nodes,
+				scene.nodeIndex,
 				neighborIds,
 				showOnlyLinked,
 				currentPath,
@@ -244,37 +275,40 @@ export function drawGraph(
 				isModal,
 			);
 
-	/** Returns null when this node shouldn't get a label at all. */
-	function getLabelAlpha(n: GNode): number | null {
-		// The node under the cursor always gets its full name at full
-		// opacity — degree-based fade and the "many labels at once"
-		// dimming are both about decluttering everything else, not this.
-		if (n.id === view.hoveredId) return 1;
-		if (!labelled) {
-			const degreeComponent = Math.min(n.degree, 8) / 8; // 0..1
-			const a = Math.min(1, degreeComponent * 0.85 + zoomBoost);
-			return a <= 0.03 ? null : a;
-		}
-		return labelled.ids.has(n.id) ? labelled.alpha : null;
-	}
-
 	// Edges — (1) always visible: a solid base opacity that never fades
 	// toward nothing, only brightened further when connected to the
 	// hovered note. Every edge of one style goes into a single path,
 	// stroked once — one stroke() per edge was most of a frame's cost.
+	// Where every drawn node is (see `shown`) — the animation's positional
+	// offset included. Purely visual: n.x/n.y are never touched, so this is
+	// the only place the offset exists.
+	if (shown.length < nodes.length) {
+		shown = new Uint8Array(nodes.length);
+		drawX = new Float64Array(nodes.length);
+		drawY = new Float64Array(nodes.length);
+	}
+	for (let i = 0; i < nodes.length; i++) {
+		const n = nodes[i]!;
+		const drawn = n.revealed && (!visibleIds || visibleIds.has(n.id));
+		shown[i] = drawn ? 1 : 0;
+		if (!drawn) continue;
+		const off = offsets?.getOffset?.(n, now);
+		drawX[i] = off ? n.x + off.dx : n.x;
+		drawY[i] = off ? n.y + off.dy : n.y;
+	}
+
+	const ends = graphIndices(nodes, edges);
 	const plainEdges = new Path2D();
 	const hoveredEdges = new Path2D();
-	for (const { source: s, target: t } of edges) {
-		if (!s.revealed || !t.revealed) continue;
-		if (visibleIds && !(visibleIds.has(s.id) && visibleIds.has(t.id)))
-			continue;
+	for (let k = 0; k < edges.length; k++) {
+		const s = ends[2 * k]!;
+		const t = ends[2 * k + 1]!;
+		if (s < 0 || t < 0 || !shown[s] || !shown[t]) continue;
 		const isHighlighted =
-			!!hovered && (s.id === hovered.id || t.id === hovered.id);
+			!!hovered && (nodes[s] === hovered || nodes[t] === hovered);
 		const path = isHighlighted ? hoveredEdges : plainEdges;
-		place(s, sp);
-		place(t, tp);
-		path.moveTo(sp.x, sp.y);
-		path.lineTo(tp.x, tp.y);
+		path.moveTo(drawX[s]!, drawY[s]!);
+		path.lineTo(drawX[t]!, drawY[t]!);
 	}
 	ctx.strokeStyle = colorEdge;
 	ctx.globalAlpha = 0.65;
@@ -300,14 +334,16 @@ export function drawGraph(
 	let hoveredX = 0;
 	let hoveredY = 0;
 	let hoveredAlpha = 0;
-	let currentNode: GNode | null = null;
-	for (const n of nodes) {
-		if (!n.revealed) continue;
-		if (visibleIds && !visibleIds.has(n.id)) continue;
+	let current = -1;
+	for (let i = 0; i < nodes.length; i++) {
+		if (!shown[i]) continue;
+		const n = nodes[i]!;
 		if (n.id === currentPath) {
-			currentNode = n;
+			current = i;
 			continue;
 		}
+		const x = drawX[i]!;
+		const y = drawY[i]!;
 		const isHovered = n.id === view.hoveredId;
 		const dimmed = !!hovered && !linkedToHovered.has(n.id);
 		updateDimAlpha(n, dimmed ? 0.35 : 1, dimDt);
@@ -315,7 +351,6 @@ export function drawGraph(
 		const baseR = baseRadius(n, view.scale);
 		const intensity = animation?.getIntensity?.(n, now) ?? 0;
 		const r = baseR * ease * animationScale(animation, n, now, intensity);
-		place(n, p);
 
 		if (intensity > 0.01) {
 			// Soft glow behind the node, same treatment as the "current
@@ -323,7 +358,7 @@ export function drawGraph(
 			// animation (e.g. flicker) reads as a "twinkle".
 			ctx.globalAlpha = intensity * 0.5 * ease;
 			ctx.beginPath();
-			ctx.arc(p.x, p.y, baseR * 2.2, 0, Math.PI * 2);
+			ctx.arc(x, y, baseR * 2.2, 0, Math.PI * 2);
 			ctx.fillStyle = colorActive;
 			ctx.fill();
 		}
@@ -331,8 +366,8 @@ export function drawGraph(
 		const alpha = n.dimAlpha * ease;
 		if (isHovered) {
 			hoveredR = r;
-			hoveredX = p.x;
-			hoveredY = p.y;
+			hoveredX = x;
+			hoveredY = y;
 			hoveredAlpha = alpha;
 		} else {
 			const level = Math.round(alpha * 100);
@@ -347,16 +382,16 @@ export function drawGraph(
 				const path = (byLevel[level] ??= new Path2D());
 				// Each circle its own subpath — no line joining it to the
 				// previous one.
-				path.moveTo(p.x + r, p.y);
-				path.arc(p.x, p.y, r, 0, Math.PI * 2);
+				path.moveTo(x + r, y);
+				path.arc(x, y, r, 0, Math.PI * 2);
 			}
 		}
 
-		const labelA = getLabelAlpha(n);
+		const labelA = labelAlpha(n, view.hoveredId, labelled, zoomBoost);
 		if (labelA !== null) {
 			labelTexts[labelCount] = n.label;
-			labelXs[labelCount] = p.x + r + 4 / view.scale;
-			labelYs[labelCount] = p.y + 4 / view.scale;
+			labelXs[labelCount] = x + r + 4 / view.scale;
+			labelYs[labelCount] = y + 4 / view.scale;
 			labelAlphas[labelCount] = Math.min(labelA, n.dimAlpha) * ease;
 			labelCount++;
 		}
@@ -388,10 +423,10 @@ export function drawGraph(
 		ctx.fillText(labelTexts[i]!, labelXs[i]!, labelYs[i]!);
 	}
 
-	if (
-		currentNode?.revealed &&
-		(!visibleIds || visibleIds.has(currentNode.id))
-	) {
+	const currentNode = current >= 0 ? nodes[current]! : null;
+	if (currentNode) {
+		const x = drawX[current]!;
+		const y = drawY[current]!;
 		const ease = revealEase(currentNode, now);
 		// Same size formula as every other node — only the color and
 		// halo mark it as "you are here", not an oversized radius.
@@ -404,17 +439,16 @@ export function drawGraph(
 				now,
 				animation?.getIntensity?.(currentNode, now) ?? 0,
 			);
-		place(currentNode, p);
 		// Halo: soft glow behind the node so it reads as "the" focal point.
 		ctx.globalAlpha = 0.28 * ease;
 		ctx.beginPath();
-		ctx.arc(p.x, p.y, r * 2.2, 0, Math.PI * 2);
+		ctx.arc(x, y, r * 2.2, 0, Math.PI * 2);
 		ctx.fillStyle = colorActive;
 		ctx.fill();
 
 		ctx.globalAlpha = ease;
 		ctx.beginPath();
-		ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+		ctx.arc(x, y, r, 0, Math.PI * 2);
 		ctx.fillStyle = colorActive;
 		ctx.fill();
 		ctx.lineWidth = 2.5 / view.scale;
@@ -425,8 +459,8 @@ export function drawGraph(
 		ctx.fillStyle = colorLabel;
 		ctx.fillText(
 			currentNode.label,
-			p.x + r + 5 / view.scale,
-			p.y + 4.5 / view.scale,
+			x + r + 5 / view.scale,
+			y + 4.5 / view.scale,
 		);
 	}
 

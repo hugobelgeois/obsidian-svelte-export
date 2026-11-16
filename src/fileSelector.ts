@@ -1,8 +1,27 @@
 import { App, setIcon, TAbstractFile, TFile, TFolder } from "obsidian";
-import { isExportable, isWithin } from "./constants";
+import {
+	addAncestors,
+	foldersFirst,
+	isExportable,
+	isNote,
+	isWithin,
+} from "./constants";
 import type SvelteExporterPlugin from "./main";
+import type { PathList } from "./settings";
 
-type PathList = "selectedPaths" | "hiddenPaths";
+/** Counts vault path `p` once for every folder it's under (see
+ * addAncestors). */
+function countAncestors(p: string, counts: Map<string, number>): void {
+	for (let i = p.indexOf("/"); i !== -1; i = p.indexOf("/", i + 1)) {
+		const folder = p.slice(0, i);
+		counts.set(folder, (counts.get(folder) ?? 0) + 1);
+	}
+}
+
+const BY_FOLDERS_FIRST = foldersFirst<TAbstractFile>(
+	(f) => f instanceof TFolder,
+	(f) => f.name,
+);
 
 /**
  * The settings tab's Export/Visible tree of every vault file and folder.
@@ -22,9 +41,14 @@ export class FileSelector {
 	private hidden = new Set<string>();
 	/** Folders with at least one selected path somewhere beneath them. */
 	private partiallySelected = new Set<string>();
-	/** Folders with at least one exportable file beneath them that isn't
-	 * selected — those also in partiallySelected show as indeterminate. */
-	private partiallyUnselected = new Set<string>();
+	/** Folder → exportable files beneath it, at any depth. Counted once per
+	 * render() (the tab opened or redrawn) rather than on every toggle's
+	 * refresh(): toggling changes the selection, not the vault. */
+	private exportableCounts = new Map<string, number>();
+	/** Folder → selected exportable files beneath it. Fewer than in
+	 * exportableCounts: some file isn't selected — a folder also in
+	 * partiallySelected then shows as indeterminate. */
+	private selectedCounts = new Map<string, number>();
 	private treeContainer: HTMLElement | null = null;
 
 	constructor(
@@ -44,6 +68,10 @@ export class FileSelector {
 		this.treeContainer = containerEl.createDiv({
 			cls: "svelte-exporter-tree",
 		});
+		this.exportableCounts = new Map();
+		for (const f of this.app.vault.getFiles()) {
+			if (isExportable(f)) countAncestors(f.path, this.exportableCounts);
+		}
 		this.snapshotSelection();
 		this.renderTree(this.treeContainer, this.app.vault.getRoot());
 	}
@@ -69,28 +97,28 @@ export class FileSelector {
 		const { selectedPaths, hiddenPaths } = this.plugin.settings;
 		this.selected = new Set(selectedPaths);
 		this.hidden = new Set(hiddenPaths);
-		const ancestorsOf = (p: string, into: Set<string>) => {
-			for (let i = p.indexOf("/"); i !== -1; i = p.indexOf("/", i + 1)) {
-				into.add(p.slice(0, i));
-			}
-		};
 		this.partiallySelected = new Set();
-		for (const p of selectedPaths) ancestorsOf(p, this.partiallySelected);
-		this.partiallyUnselected = new Set();
-		for (const f of this.app.vault.getFiles()) {
-			if (isExportable(f) && !this.selected.has(f.path)) {
-				ancestorsOf(f.path, this.partiallyUnselected);
+		this.selectedCounts = new Map();
+		// Over the selection only, not every file of the vault.
+		for (const p of this.selected) {
+			addAncestors(p, this.partiallySelected);
+			const f = this.app.vault.getAbstractFileByPath(p);
+			if (f instanceof TFile && isExportable(f)) {
+				countAncestors(p, this.selectedCounts);
 			}
 		}
 	}
 
+	/** Whether some exportable file beneath `folder` isn't selected. */
+	private hasUnselected(folder: string): boolean {
+		return (
+			(this.selectedCounts.get(folder) ?? 0) <
+			(this.exportableCounts.get(folder) ?? 0)
+		);
+	}
+
 	private renderTree(container: HTMLElement, folder: TFolder, depth = 0) {
-		const sorted = [...folder.children].sort((a, b) => {
-			const aIsFolder = a instanceof TFolder ? 0 : 1;
-			const bIsFolder = b instanceof TFolder ? 0 : 1;
-			if (aIsFolder !== bIsFolder) return aIsFolder - bIsFolder;
-			return a.name.localeCompare(b.name);
-		});
+		const sorted = [...folder.children].sort(BY_FOLDERS_FIRST);
 		for (const child of sorted) {
 			if (child instanceof TFolder) {
 				this.renderFolderNode(container, child, depth);
@@ -133,7 +161,7 @@ export class FileSelector {
 			this.selected.has(folder.path) ||
 			this.partiallySelected.has(folder.path);
 		exportCb.indeterminate =
-			anySelected && this.partiallyUnselected.has(folder.path);
+			anySelected && this.hasUnselected(folder.path);
 		exportCb.checked = anySelected && !exportCb.indeterminate;
 
 		// Eye toggle button (visible = not hidden)
@@ -173,9 +201,8 @@ export class FileSelector {
 		arrow.addEventListener("click", toggleExpand);
 		labelWrap.addEventListener("click", toggleExpand);
 
-		exportCb.addEventListener(
-			"change",
-			this.onAsync(async () => {
+		exportCb.addEventListener("change", () =>
+			this.update(() => {
 				if (exportCb.checked) {
 					// Select folder AND all descendants explicitly (2.1 reverse:
 					// checking a parent selects every child).
@@ -187,16 +214,11 @@ export class FileSelector {
 					this.removeByPrefix("selectedPaths", folder.path);
 					this.removeByPrefix("hiddenPaths", folder.path);
 				}
-				await this.plugin.saveSettings();
-				// Refresh just the tree: ancestors above this folder may also
-				// need their checked state recomputed, without resetting scroll.
-				this.refresh();
 			}),
 		);
 
-		eyeBtn.addEventListener(
-			"click",
-			this.onAsync(async () => {
+		eyeBtn.addEventListener("click", () =>
+			this.update(() => {
 				if (this.hidden.has(folder.path)) {
 					// Making a parent visible again makes every descendant
 					// explicitly visible too (mirrors Export's uncheck cascade).
@@ -207,11 +229,6 @@ export class FileSelector {
 					this.addPath("hiddenPaths", folder.path);
 					this.addDescendants("hiddenPaths", folder);
 				}
-				await this.plugin.saveSettings();
-				// Same logic as Export: refresh the tree (not just this button)
-				// so descendants' disabled/hidden state updates too, without
-				// resetting scroll position.
-				this.refresh();
 			}),
 		);
 	}
@@ -228,7 +245,7 @@ export class FileSelector {
 		});
 		// Same "nav-file-tag" badge Obsidian's own file explorer shows next to
 		// non-markdown files (e.g. "PNG", "JSON") — markdown files get none.
-		if (file.extension !== "md") {
+		if (!isNote(file)) {
 			labelWrap.createSpan({ cls: "nav-file-tag", text: file.extension });
 		}
 
@@ -253,31 +270,23 @@ export class FileSelector {
 			ancestorHidden || !exportCb.checked,
 		);
 
-		exportCb.addEventListener(
-			"change",
-			this.onAsync(async () => {
+		exportCb.addEventListener("change", () =>
+			this.update(() => {
 				if (exportCb.checked) this.addPath("selectedPaths", file.path);
 				else {
 					this.removePath("selectedPaths", file.path);
 					this.removePath("hiddenPaths", file.path);
 				}
-				await this.plugin.saveSettings();
-				// Refresh the tree so every ancestor folder checkbox up the tree
-				// recomputes (2.3), without resetting scroll.
-				this.refresh();
 			}),
 		);
 
-		eyeBtn.addEventListener(
-			"click",
-			this.onAsync(async () => {
+		eyeBtn.addEventListener("click", () =>
+			this.update(() => {
 				if (this.hidden.has(file.path)) {
 					this.removePath("hiddenPaths", file.path);
 				} else {
 					this.addPath("hiddenPaths", file.path);
 				}
-				await this.plugin.saveSettings();
-				this.refresh();
 			}),
 		);
 	}
@@ -299,16 +308,19 @@ export class FileSelector {
 		return eyeBtn;
 	}
 
-	/** Wraps an async DOM event handler so it can be passed to addEventListener without a dangling, unhandled promise. */
-	private onAsync(handler: () => Promise<void>): () => void {
-		return () => {
-			void handler();
-		};
+	/**
+	 * Applies an Export/Visible toggle: `change` edits the stored lists, then
+	 * they're saved and the tree is refreshed — not just the clicked row, so
+	 * every ancestor's checkbox and every descendant's disabled/hidden state
+	 * are recomputed too (2.3), without resetting scroll.
+	 */
+	private update(change: () => void): void {
+		change();
+		void this.plugin.saveSettings().then(() => this.refresh());
 	}
 
 	// ── Selection helpers ─────────────────────────────────────────────────
-	// Same operations for both stored lists: "selectedPaths" (Export) and
-	// "hiddenPaths" (Visible).
+	// Same operations for both stored lists (see PathList).
 
 	private addPath(list: PathList, p: string) {
 		if (!this.plugin.settings[list].includes(p))

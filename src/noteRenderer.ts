@@ -1,8 +1,16 @@
 import * as fs from "fs";
-import { App, Component, MarkdownRenderer, resolveSubpath, TFile } from "obsidian";
+import {
+	App,
+	Component,
+	type HeadingCache,
+	MarkdownRenderer,
+	resolveSubpath,
+	TFile,
+} from "obsidian";
 import * as path from "path";
 import {
 	BASE_PATH_SENTINEL,
+	isNote,
 	routeOf,
 	slugify,
 	staticFilePath,
@@ -33,13 +41,12 @@ export interface NoteDeps {
 	/** Link targets that matched no file. */
 	unresolved: string[];
 	/** "path#subpath" of the headings/blocks it links to — where on the
-	 * target page each link leads depends on that note's own headings.
-	 * (Optional: pages exported before it existed don't have it.) */
-	anchors?: string[];
+	 * target page each link leads depends on that note's own headings. */
+	anchors: string[];
 }
 
 /** NoteDeps while a note is being rendered — deduplicated as they come. */
-type DepSets = { [K in keyof NoteDeps]-?: Set<string> };
+type DepSets = { [K in keyof NoteDeps]: Set<string> };
 
 export interface RenderedNote {
 	html: string;
@@ -104,28 +111,34 @@ export class NoteRenderer {
 	readonly runtimeCss = new Map<string, Map<string, string>>();
 	/** Code block languages of the active integrations. */
 	private readonly activeLanguages: Set<string>;
-	/** Each active integration with interactive bits to drop, and their
-	 * selector — joined once, not once per note. */
-	private readonly removals: IntegrationRemoval[];
+	/** The active integrations with their selectors — joined once, not
+	 * once per note. */
+	private readonly integrations: ActiveIntegration[];
 	/** app:// URL → the existing local file it serves, or null — the same
 	 * image is often embedded in many notes. (The URL carries the file's
 	 * mtime, so an edited file gets a new entry.) */
 	private readonly localFiles = new Map<string, string | null>();
+	/** Runtime <style> → its CSS text when last read — see styleText(). */
+	private readonly styleTexts = new WeakMap<
+		HTMLStyleElement,
+		{ version: string; css: string }
+	>();
 
 	constructor(
 		private readonly app: App,
 		private readonly vaultPath: string,
-		private readonly active: PluginIntegration[],
+		active: PluginIntegration[],
 		/** Vault paths of every note in this export. */
 		private readonly exportedPaths: Set<string>,
 	) {
 		this.activeLanguages = new Set(active.flatMap((i) => i.codeBlockLanguages));
-		this.removals = active
-			.filter((i) => i.removeSelectors.length)
-			.map((integration) => ({
-				integration,
-				selector: integration.removeSelectors.join(","),
-			}));
+		this.integrations = active.map((integration) => ({
+			integration,
+			blockSelector: integration.codeBlockLanguages
+				.map((lang) => `.block-language-${lang}`)
+				.join(","),
+			removeSelector: integration.removeSelectors.join(","),
+		}));
 	}
 
 	async render(file: TFile, body: string): Promise<RenderedNote> {
@@ -158,14 +171,23 @@ export class NoteRenderer {
 			};
 			const linkedRoutes = new Set<string>();
 			labelBlocks(el);
-			stripInteractivity(el, this.removals);
+			// Looked up once, for both stripInteractivity() and captureCss().
+			const blocks = this.integrations.map(
+				(i): [ActiveIntegration, HTMLElement[]] => [
+					i,
+					i.blockSelector
+						? Array.from(el.querySelectorAll<HTMLElement>(i.blockSelector))
+						: [],
+				],
+			);
+			stripInteractivity(el, blocks);
 			this.rewriteEmbeds(el, file, deps, linkedRoutes);
 			this.rewriteLinks(el, file, deps, linkedRoutes);
 			el.querySelectorAll("a.tag").forEach((a) => replaceTag(a, "span"));
 			const headings = labelHeadings(el);
 			wrapTables(el);
 			const assets = rewriteLocalUrls(el, this.vaultPath, this.localFiles);
-			const css = await this.captureCss(el);
+			const css = await this.captureCss(el, blocks);
 			const image =
 				el
 					.querySelector(`img[src^="${BASE_PATH_SENTINEL}"]`)
@@ -237,7 +259,7 @@ export class NoteRenderer {
 	}
 
 	private isExportedNote(file: TFile | null): file is TFile {
-		return !!file && file.extension === "md" && this.exportedPaths.has(file.path);
+		return !!file && isNote(file) && this.exportedPaths.has(file.path);
 	}
 
 	/**
@@ -260,7 +282,7 @@ export class NoteRenderer {
 			const label = embed.getAttribute("alt") || linkpath || src;
 			if (dest) deps.embeds.add(dest.path);
 			else deps.unresolved.add(linkpath);
-			if (dest && dest.extension !== "md") continue;
+			if (dest && !isNote(dest)) continue;
 			if (!this.isExportedNote(dest)) {
 				embed.replaceWith(document.createTextNode(label));
 				continue;
@@ -312,13 +334,17 @@ export class NoteRenderer {
 
 	/** Captures the runtime CSS the rendered note relies on, and returns the
 	 * pluginCss/ stylesheets the page must import. */
-	private async captureCss(el: HTMLElement): Promise<string[]> {
+	private async captureCss(
+		el: HTMLElement,
+		blocks: [ActiveIntegration, HTMLElement[]][],
+	): Promise<string[]> {
 		const ids: string[] = [];
-		for (const integration of this.active) {
-			const blocks = integrationBlocks(el, integration);
-			if (!blocks.length) continue;
+		for (const [{ integration }, found] of blocks) {
+			// Not those inside an embed rewriteEmbeds() reduced to text.
+			const kept = found.filter((b) => b.isConnected);
+			if (!kept.length) continue;
 			ids.push(integration.pluginId);
-			this.captureRuntimeCss(integration, blocks);
+			this.captureRuntimeCss(integration, kept);
 		}
 		if (el.querySelector("mjx-container")) {
 			ids.push(MATHJAX_CSS_ID);
@@ -362,9 +388,32 @@ export class NoteRenderer {
 			if (s instanceof HTMLStyleElement) styleEls.add(s);
 		}
 		for (const s of styleEls) {
-			const css = readStyleElement(s);
+			const css = this.styleText(s);
 			if (css) chunks.set(s.id || css, css);
 		}
+	}
+
+	/**
+	 * readStyleElement(s), read again only once `s` changed: the same
+	 * stylesheets turn up for every note using a plugin, and serializing a
+	 * big one each time was most of captureRuntimeCss()'s cost. A change is
+	 * noticed by its rule count (rules added/removed through insertRule())
+	 * or its text length — an edit keeping both the same would be missed,
+	 * which plugins injecting their styles don't do.
+	 */
+	private styleText(s: HTMLStyleElement): string {
+		let ruleCount = -1;
+		try {
+			ruleCount = s.sheet?.cssRules.length ?? -1;
+		} catch {
+			// unreadable rules: textContent alone tells
+		}
+		const version = `${ruleCount}:${s.textContent?.length ?? 0}`;
+		const cached = this.styleTexts.get(s);
+		if (cached?.version === version) return cached.css;
+		const css = readStyleElement(s);
+		this.styleTexts.set(s, { version, css });
+		return css;
 	}
 
 	/** MathJax's CHTML output only looks right with its stylesheet, which
@@ -434,12 +483,13 @@ export function dependencyKey(
 	};
 	const exported = (p: string) => (exportedPaths.has(p) ? "e" : "-");
 	const anchorAt = (anchor: string) => {
-		const hash = anchor.indexOf("#"); // file names can't contain "#"
-		const f = fileAt(anchor.slice(0, hash));
-		return f ? anchorId(app, f, anchor.slice(hash + 1)) : "";
+		// "path#subpath" — file names can't contain "#".
+		const { linkpath, fragment } = splitLinktext(anchor);
+		const f = fileAt(linkpath);
+		return f ? anchorId(app, f, fragment) : "";
 	};
 	return [
-		...(deps.anchors ?? []).map((a) => `A ${a} ${anchorAt(a)}`),
+		...deps.anchors.map((a) => `A ${a} ${anchorAt(a)}`),
 		...deps.links.map((p) => `L ${p} ${fileAt(p) ? "1" : "0"} ${exported(p)}`),
 		...deps.embeds.map(
 			(p) => `E ${p} ${fileAt(p)?.stat.mtime ?? "gone"} ${exported(p)}`,
@@ -502,11 +552,29 @@ export function anchorId(app: App, file: TFile, subpath: string): string {
 	const target = cache && resolveSubpath(cache, `#${subpath}`);
 	if (!target) return "";
 	if (target.type === "block") return blockId(target.block.id);
-	if (target.type !== "heading") return "";
-	const headings = cache.headings ?? [];
-	const offset = target.current.position.start.offset;
-	const index = headings.findIndex((h) => h.position.start.offset === offset);
-	return headingIds(headings.map((h) => h.heading))[index] ?? "";
+	if (target.type !== "heading" || !cache.headings) return "";
+	return headingIdsByOffset(cache.headings).get(
+		target.current.position.start.offset,
+	) ?? "";
+}
+
+/** A note's heading ids by heading position — keyed on the metadata
+ * cache's own headings array, which Obsidian replaces whenever the note
+ * changes, so an entry can never go stale (and is dropped with it). Every
+ * link to a note's headings, across every page that links to it, then
+ * shares one headingIds() pass over them instead of one per link. */
+const headingIdCache = new WeakMap<HeadingCache[], Map<number, string>>();
+
+function headingIdsByOffset(headings: HeadingCache[]): Map<number, string> {
+	let ids = headingIdCache.get(headings);
+	if (!ids) {
+		const list = headingIds(headings.map((h) => h.heading));
+		ids = new Map(
+			headings.map((h, i) => [h.position.start.offset, list[i] ?? ""]),
+		);
+		headingIdCache.set(headings, ids);
+	}
+	return ids;
 }
 
 /** The site id of a block's "^id". */
@@ -594,28 +662,24 @@ function wrapTables(el: HTMLElement) {
 	});
 }
 
-/** The rendered blocks of `integration`'s code block languages in `el`. */
-function integrationBlocks(
-	el: HTMLElement,
-	integration: PluginIntegration,
-): HTMLElement[] {
-	return integration.codeBlockLanguages.flatMap((lang) =>
-		Array.from(el.querySelectorAll<HTMLElement>(`.block-language-${lang}`)),
-	);
-}
-
-interface IntegrationRemoval {
+interface ActiveIntegration {
 	integration: PluginIntegration;
-	/** Its removeSelectors, joined. */
-	selector: string;
+	/** Its rendered blocks: one .block-language-* per code block language. */
+	blockSelector: string;
+	/** Its removeSelectors, joined — "" if none. */
+	removeSelector: string;
 }
 
-function stripInteractivity(el: HTMLElement, removals: IntegrationRemoval[]) {
+function stripInteractivity(
+	el: HTMLElement,
+	blocks: [ActiveIntegration, HTMLElement[]][],
+) {
 	el.querySelectorAll(INTERACTIVE_SELECTORS).forEach((n) => n.remove());
 	// Each integration's own interactive bits, only inside its own blocks.
-	for (const { integration, selector } of removals) {
-		for (const block of integrationBlocks(el, integration)) {
-			block.querySelectorAll(selector).forEach((n) => n.remove());
+	for (const [{ removeSelector }, found] of blocks) {
+		if (!removeSelector) continue;
+		for (const block of found) {
+			block.querySelectorAll(removeSelector).forEach((n) => n.remove());
 		}
 	}
 	// Foldable callouts can't be unfolded on the static site — show them open.
@@ -679,13 +743,16 @@ function waitForDomToSettle(
 /**
  * Where a local file referenced by a rendered note is served on the site
  * (relative to static/): its vault path, or _external/<name> for a file
- * outside the vault.
+ * outside the vault — both through staticFilePath(), so a leading dot is
+ * replaced there too (the page's URL, staticFileUrl(), uses this as-is).
  */
 export function assetStaticPath(absolutePath: string, vaultPath: string): string {
 	const rel = path.relative(vaultPath, absolutePath);
-	return rel.startsWith("..") || path.isAbsolute(rel)
-		? `_external/${path.basename(absolutePath)}`
-		: staticFilePath(rel);
+	return staticFilePath(
+		rel.startsWith("..") || path.isAbsolute(rel)
+			? `_external/${path.basename(absolutePath)}`
+			: rel,
+	);
 }
 
 /**

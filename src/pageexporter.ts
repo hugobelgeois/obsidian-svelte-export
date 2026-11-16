@@ -1,6 +1,7 @@
 import { App, TFile } from "obsidian";
 import {
 	BASE_PATH_SENTINEL,
+	excerpt,
 	pageRouteOf,
 	sanitizeRoutePath,
 } from "./constants";
@@ -96,14 +97,6 @@ function htmlExpr(html: string): string {
 		: `{@html ${literal}}`;
 }
 
-/** The first `max` characters of `text`, cut at a word boundary. */
-function excerpt(text: string, max = 200): string {
-	if (text.length <= max) return text;
-	const cut = text.slice(0, max);
-	const lastSpace = cut.lastIndexOf(" ");
-	return (lastSpace > max / 2 ? cut.slice(0, lastSpace) : cut) + "…";
-}
-
 /** A <meta> tag; `content` is plain text, emitted as a Svelte expression. */
 function metaTag(attr: "name" | "property", key: string, content: string) {
 	return `\n  <meta ${attr}="${key}" content={${JSON.stringify(content)}} />`;
@@ -121,7 +114,7 @@ function headMetadata(
 	rendered: RenderedNote,
 	site: SiteInfo,
 ): string {
-	const summary = description || excerpt(rendered.text);
+	const summary = description || excerpt(rendered.text, 200);
 	let tags = "";
 	if (summary) tags += metaTag("name", "description", summary);
 	tags += metaTag("property", "og:type", "article");

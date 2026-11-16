@@ -1,11 +1,6 @@
 <script lang="ts">
 	import { base } from "$app/paths";
-	import {
-		prepare,
-		search,
-		type PreparedEntry,
-		type SearchEntry,
-	} from "$lib/searchText";
+	import { prepare, Searcher, type SearchEntry } from "$lib/searchText";
 
 	/** Full-text results for the sidebar's search box, under the file tree
 	 * (which only matches note names). The index (static/search.json,
@@ -14,7 +9,7 @@
 
 	const MIN_QUERY_LENGTH = 2;
 
-	let index: PreparedEntry[] | null = $state(null);
+	let index: Searcher | null = $state(null);
 	let failed = $state(false);
 	let loading: Promise<void> | null = null;
 
@@ -25,7 +20,7 @@
 				return res.json() as Promise<SearchEntry[]>;
 			})
 			.then((entries) => {
-				index = prepare(entries);
+				index = new Searcher(prepare(entries));
 			})
 			.catch(() => {
 				failed = true;
@@ -36,7 +31,7 @@
 	$effect(() => {
 		if (active) loadIndex();
 	});
-	const hits = $derived(active && index ? search(index, query) : []);
+	const hits = $derived(active && index ? index.search(query) : []);
 </script>
 
 {#if active}

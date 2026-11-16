@@ -1,6 +1,11 @@
 import { App, Notice, TFile } from "obsidian";
 import * as path from "path";
-import { IMAGE_EXTENSIONS, routeOf, staticFilePath } from "./constants";
+import {
+	IMAGE_EXTENSIONS,
+	isNote,
+	routeOf,
+	staticFilePath,
+} from "./constants";
 import { openInFileExplorer } from "./electronDialog";
 import { ExportProgressModal } from "./exportModal";
 import {
@@ -18,7 +23,11 @@ import {
 	captureStyleSettingsCss,
 	readActiveCss,
 } from "./obsidianCss";
-import { getVaultBasePath, resolveDestinationPath } from "./obsidianUtil";
+import {
+	errorMessage,
+	getVaultBasePath,
+	resolveDestinationPath,
+} from "./obsidianUtil";
 import { NoteRenderer } from "./noteRenderer";
 import { exportFile, isNotePage, pageFiles, SiteInfo } from "./pageexporter";
 import { ensureSvelteProject } from "./scaffold";
@@ -107,10 +116,8 @@ export class SiteExporter {
 
 		// Vault paths of every note in this export, and their routes — the
 		// single source of truth for "which routes should exist right now",
-		// reused to pick the default page and drop stale links.json entries.
-		const exportedNotes = new Set(
-			files.filter((f) => f.extension === "md").map((f) => f.path),
-		);
+		// reused to pick the default page and resolve links.
+		const exportedNotes = new Set(files.filter(isNote).map((f) => f.path));
 		const expectedRoutes = new Set([...exportedNotes].map(routeOf));
 
 		const ready = await ensureSvelteProject(
@@ -146,17 +153,11 @@ export class SiteExporter {
 		patchAppHtml(ctx, staticFiles, styleSettingsClasses);
 
 		const site = this.siteInfo();
-		const state = loadExportState(
-			ctx,
-			files,
-			exportedNotes,
-			expectedRoutes,
-			site,
-		);
+		const state = loadExportState(ctx, files, exportedNotes, site);
 		const counts = await this.exportFiles(staticFiles, pages, state);
 		saveExportState(ctx, staticFiles, state);
 		const listed = listedNotes(files, ctx.settings.hiddenPaths);
-		writeSearchIndex(staticFiles, listed, state.searchText);
+		writeSearchIndex(staticFiles, listed, state.pageState.pages);
 		writeSitemap(staticFiles, listed, site);
 		// Last, once everything the site needs has been copied/written —
 		// an export that failed before this point deletes nothing.
@@ -256,9 +257,7 @@ export class SiteExporter {
 				await openInFileExplorer(this.ctx.destinationPath);
 			} catch (e) {
 				new Notice(
-					`⚠️ could not open destination folder: ${
-						e instanceof Error ? e.message : String(e)
-					}`,
+					`⚠️ could not open destination folder: ${errorMessage(e)}`,
 				);
 				console.error(
 					"[SvelteExporter] Could not open destination folder:",

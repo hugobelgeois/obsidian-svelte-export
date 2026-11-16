@@ -14,6 +14,7 @@
 		drawGraph,
 		withNeighbors,
 		type GraphColors,
+		type GraphScene,
 	} from "$lib/graphDraw";
 	import { DRAG_ALPHA, ForceSimulation, seedPositions } from "$lib/graphPhysics";
 	import { ProgressiveReveal } from "$lib/graphReveal";
@@ -27,7 +28,7 @@
 		zoomAt,
 		type View,
 	} from "$lib/graphView";
-	import { getLinkEdges } from "$lib/linkGraph";
+	import { getLinkEdges, type LinkEdge } from "$lib/linkGraph";
 	import { toRoutePath } from "$lib/routePath";
 	import CloseIcon from "$lib/CloseIcon.svelte";
 	import Icon from "$lib/Icon.svelte";
@@ -56,13 +57,6 @@
 	const props: { standalone?: boolean } = $props();
 	const standalone = untrack(() => props.standalone ?? false);
 
-	// ── Types ────────────────────────────────────────────────────────────────
-
-	interface GLink {
-		source: string;
-		target: string;
-	}
-
 	// ── Graph data (structure is static — built once) ───────────────────────
 
 	const files = flattenTree(siteTree);
@@ -77,6 +71,7 @@
 		fx: null,
 		fy: null,
 		degree: 0,
+		neighbors: [], // filled from the links below
 		// Standalone starts every node hidden and reveals them progressively
 		// (see `reveal` below); every other mode shows everything at once.
 		revealed: !standalone,
@@ -89,29 +84,24 @@
 	// Real wikilinks resolved by the plugin (links.json), not folder
 	// hierarchy — this is what makes the graph mirror actual note
 	// relationships instead of a nearly-empty pseudo-graph.
-	const links: GLink[] = getLinkEdges().filter(
+	const links: LinkEdge[] = getLinkEdges().filter(
 		(l) => nodeIndex.has(l.source) && nodeIndex.has(l.target),
 	);
-
-	/** Node id → ids of every node it's directly linked to. */
-	const adjacency = new Map<string, string[]>(nodes.map((n) => [n.id, []]));
-	for (const l of links) {
-		adjacency.get(l.source)!.push(l.target);
-		adjacency.get(l.target)!.push(l.source);
-		nodeIndex.get(l.source)!.degree++;
-		nodeIndex.get(l.target)!.degree++;
-	}
 
 	/** Every link, as the nodes it joins — for the physics and drawing. */
 	const edges = links.map((l) => ({
 		source: nodeIndex.get(l.source)!,
 		target: nodeIndex.get(l.target)!,
 	}));
+	for (const { source, target } of edges) {
+		source.neighbors.push(target);
+		target.neighbors.push(source);
+		source.degree++;
+		target.degree++;
+	}
 
 	// ── Progressive reveal (standalone page only) — see lib/graphReveal.ts ──
-	const reveal = standalone
-		? new ProgressiveReveal(nodes, adjacency, nodeIndex)
-		: null;
+	const reveal = standalone ? new ProgressiveReveal(nodes) : null;
 
 	/** Previous frame's time, for the hover dimming's easing. */
 	let lastDimFrameTime = 0;
@@ -121,7 +111,7 @@
 	// vault's graph view — see lib/graphPhysics.ts.
 
 	const sim = new ForceSimulation(nodes, edges, GRAPH_FORCES);
-	seedPositions(nodes, (id) => adjacency.get(id) ?? [], nodeIndex);
+	seedPositions(nodes);
 
 	// ── Views & shared display state ─────────────────────────────────────────
 
@@ -141,6 +131,15 @@
 	/** Current note + its direct links — recomputed on navigation only. */
 	let currentNeighbors = new Set<string>();
 
+	/** Whether the "only linked" filter (if on) lets `n` show — what the
+	 * views are fitted to. Not-yet-revealed nodes count: fitting only the
+	 * revealed ones would zoom in and out as the reveal goes, and leave the
+	 * last ones out of frame once the layout has settled. */
+	const inFilter = (n: GNode) =>
+		!showOnlyLinked || currentNeighbors.has(n.id);
+	/** Whether `n` is drawn — only those can be hovered, dragged or clicked. */
+	const isVisible = (n: GNode) => n.revealed && inFilter(n);
+
 	/** Recenter (pan only, keep current zoom level) on the current note. */
 	function centerOnCurrent(view: View) {
 		centerOn(view, currentPath ? nodeIndex.get(currentPath) : null);
@@ -149,7 +148,7 @@
 	/** Fully restart the layout from scratch — freshly placed nodes, hot
 	 * physics, no leftover velocity or drag state. */
 	function resetPhysics() {
-		seedPositions(nodes, (id) => adjacency.get(id) ?? [], nodeIndex);
+		seedPositions(nodes);
 		sim.alpha = 1;
 		sim.alphaTarget = 0;
 		wake();
@@ -163,8 +162,8 @@
 		resetPhysics();
 		sidebarView.userAdjusted = false;
 		modalView.userAdjusted = false;
-		fitView(sidebarView, nodes, true);
-		if (expanded) fitView(modalView, nodes, true);
+		fitView(sidebarView, nodes, inFilter, true);
+		if (expanded) fitView(modalView, nodes, inFilter, true);
 	}
 
 	// ── Rendering ────────────────────────────────────────────────────────────
@@ -190,28 +189,30 @@
 		return colors;
 	}
 
+	/** What drawGraph() draws — one object for the component's lifetime,
+	 * its changing fields refreshed by draw(), rather than a new one every
+	 * frame for the garbage collector to pick up. */
+	const scene: GraphScene = {
+		nodes,
+		edges,
+		nodeIndex,
+		currentPath: "",
+		currentNeighbors: new Set(),
+		showOnlyLinked: false,
+		animation: activeAnimation,
+		nodeColors: NODE_COLORS,
+		colors: null!, // set by draw() before every frame
+	};
+
 	/** Draws one frame of `view` — see drawGraph() in graphDraw.ts. */
 	function draw(view: View, isModal: boolean, now: number) {
 		const dimDt = lastDimFrameTime > 0 ? now - lastDimFrameTime : 16;
 		lastDimFrameTime = now;
-		drawGraph(
-			view,
-			{
-				nodes,
-				edges,
-				nodeIndex,
-				adjacency,
-				currentPath,
-				currentNeighbors,
-				showOnlyLinked,
-				animation: activeAnimation,
-				nodeColors: NODE_COLORS,
-				colors: getColors(),
-			},
-			isModal,
-			now,
-			dimDt,
-		);
+		scene.currentPath = currentPath;
+		scene.currentNeighbors = currentNeighbors;
+		scene.showOnlyLinked = showOnlyLinked;
+		scene.colors = getColors();
+		drawGraph(view, scene, isModal, now, dimDt);
 	}
 
 	// ── Animation loop ───────────────────────────────────────────────────────
@@ -293,7 +294,7 @@
 			// node while the layout is still moving into place (3) — but
 			// never while that view's own drag is in progress, or dragging
 			// a node out of frame would resize/pan the window (2).
-			if (stillMoving && !view.dragNode) fitView(view, nodes);
+			if (stillMoving && !view.dragNode) fitView(view, nodes, inFilter);
 			advanceAnimation(now, bigViewActive);
 			draw(view, bigViewActive, now);
 		} catch (err) {
@@ -325,7 +326,7 @@
 
 	function handlePointerDown(view: View, canPan: boolean, e: PointerEvent) {
 		const { x, y } = toWorld(view, e.clientX, e.clientY);
-		const hit = nodeAt(view, nodes, x, y);
+		const hit = nodeAt(view, nodes, x, y, isVisible);
 		view.moved = false;
 		view.lastX = e.clientX;
 		view.lastY = e.clientY;
@@ -367,7 +368,7 @@
 			wake();
 		} else {
 			const { x, y } = toWorld(view, e.clientX, e.clientY);
-			const hit = nodeAt(view, nodes, x, y);
+			const hit = nodeAt(view, nodes, x, y, isVisible);
 			setHovered(view, hit ? hit.id : null);
 			view.canvas!.style.cursor = hit
 				? "pointer"
@@ -444,12 +445,16 @@
 		const path = toRoutePath(page.url.pathname);
 		untrack(() => {
 			currentPath = path;
-			currentNeighbors = withNeighbors(adjacency, currentPath);
+			currentNeighbors = withNeighbors(nodeIndex.get(currentPath));
 			// (1) Recenter on the note we just navigated to — whether that
 			// came from clicking a node in the graph or any other kind of
-			// navigation.
-			if (!standalone) centerOnCurrent(sidebarView);
-			centerOnCurrent(modalView);
+			// navigation. Filtered to its links, those just changed: fitted
+			// to them instead (unless zoomed/panned by hand, see fitView).
+			const views = standalone ? [modalView] : [sidebarView, modalView];
+			for (const view of views) {
+				centerOnCurrent(view);
+				if (showOnlyLinked) fitView(view, nodes, inFilter);
+			}
 			wake();
 		});
 	});
@@ -461,7 +466,7 @@
 			sidebarResizeObserver = new ResizeObserver(() => {
 				sidebarView.width = wrap.clientWidth;
 				sidebarView.height = wrap.clientHeight;
-				fitView(sidebarView, nodes); // respects a manual zoom, if any (2)
+				fitView(sidebarView, nodes, inFilter); // respects a manual zoom, if any (2)
 				wake();
 			});
 			sidebarResizeObserver.observe(wrap);
@@ -500,7 +505,7 @@
 		const ro = new ResizeObserver(() => {
 			modalView.width = modalWrapEl.clientWidth;
 			modalView.height = modalWrapEl.clientHeight;
-			fitView(modalView, nodes);
+			fitView(modalView, nodes, inFilter);
 			wake();
 		});
 		ro.observe(modalWrapEl);

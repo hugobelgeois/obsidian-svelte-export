@@ -409,11 +409,7 @@ class Quadtree {
  * position of its already-placed neighbors (± a random offset), or, with
  * none placed yet, somewhere random in a disc sized for the whole graph.
  */
-export function seedPositions(
-	nodes: GNode[],
-	neighbors: (id: string) => string[],
-	nodeIndex: Map<string, GNode>,
-): void {
+export function seedPositions(nodes: GNode[]): void {
 	const area = SEED_AREA_PER_NODE * nodes.length * WORLD_SCALE ** 2;
 	const discRadius = Math.sqrt(area / Math.PI);
 	const spread = Math.sqrt(area);
@@ -423,9 +419,8 @@ export function seedPositions(
 		let sx = 0;
 		let sy = 0;
 		let count = 0;
-		for (const id of neighbors(n.id)) {
-			const other = nodeIndex.get(id);
-			if (other && placed.has(other)) {
+		for (const other of n.neighbors) {
+			if (placed.has(other)) {
 				sx += other.x;
 				sy += other.y;
 				count++;

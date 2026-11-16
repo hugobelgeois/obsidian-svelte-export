@@ -1,7 +1,7 @@
 import { App, TFile } from "obsidian";
 import * as path from "path";
 import type { GraphForces } from "../svelte-lib/lib/shared";
-import { pageRouteOf } from "./constants";
+import { isNote, pageRouteOf } from "./constants";
 import { readJsonFile } from "./obsidianUtil";
 
 // Reads the vault's core graph view settings (.obsidian/graph.json) so the
@@ -81,6 +81,62 @@ function tokenizeQuery(query: string): string[] {
 	return tokens;
 }
 
+/** One term of a color group query, parsed: its filter ("" for a bare
+ * term) and lowercased value — "#tag" for a `tag:` term. */
+interface QueryTerm {
+	op: string;
+	value: string;
+}
+
+/** A query's terms, parsed once — not again for every file. Null for a
+ * query without any term, which matches nothing. (One whose terms are
+ * all empty, like `path:""`, matches everything.) */
+function parseQuery(query: string): QueryTerm[] | null {
+	const tokens = tokenizeQuery(query);
+	if (!tokens.length) return null;
+	const terms: QueryTerm[] = [];
+	for (const token of tokens) {
+		const colonIdx = token.indexOf(":");
+		const op = colonIdx > 0 ? token.slice(0, colonIdx).toLowerCase() : "";
+		let value = (colonIdx > 0 ? token.slice(colonIdx + 1) : token)
+			.replace(/^"|"$/g, "")
+			.toLowerCase();
+		if (!value) continue;
+		if (op === "tag") value = `#${value.replace(/^#/, "")}`;
+		terms.push({ op, value });
+	}
+	return terms;
+}
+
+/** What queries match a file on, lowercased — its tags only read (from
+ * the metadata cache) if some `tag:` term asks. */
+class FileFacts {
+	readonly path: string;
+	readonly name: string;
+	private tagSet: Set<string> | null = null;
+
+	constructor(
+		private readonly file: TFile,
+		private readonly app: App,
+	) {
+		this.path = file.path.toLowerCase();
+		this.name = file.basename.toLowerCase();
+	}
+
+	/** Inline and front matter tags, as "#tag". */
+	get tags(): Set<string> {
+		if (!this.tagSet) {
+			const cache = this.app.metadataCache.getFileCache(this.file);
+			this.tagSet = new Set((cache?.tags ?? []).map((t) => t.tag.toLowerCase()));
+			const fmTags: unknown = cache?.frontmatter?.tags;
+			for (const t of Array.isArray(fmTags) ? fmTags : fmTags ? [fmTags] : []) {
+				this.tagSet.add(`#${String(t).toLowerCase().replace(/^#/, "")}`);
+			}
+		}
+		return this.tagSet;
+	}
+}
+
 /**
  * A small subset of Obsidian's search syntax — just enough for typical
  * graph color group queries: `path:`/`file:`/`tag:` filters (plus a bare
@@ -90,49 +146,20 @@ function tokenizeQuery(query: string): string[] {
  * reimplementing here for what's normally a handful of simple folder/tag
  * groupings.
  */
-function matchesQuery(tokens: string[], file: TFile, app: App): boolean {
-	if (!tokens.length) return false;
-
-	for (const token of tokens) {
-		const colonIdx = token.indexOf(":");
-		const op = colonIdx > 0 ? token.slice(0, colonIdx).toLowerCase() : "";
-		const value = (colonIdx > 0 ? token.slice(colonIdx + 1) : token)
-			.replace(/^"|"$/g, "")
-			.toLowerCase();
-		if (!value) continue;
-
-		let matched: boolean;
+function matchesQuery(terms: QueryTerm[], file: FileFacts): boolean {
+	// Every term must match (AND).
+	return terms.every(({ op, value }) => {
 		switch (op) {
 			case "path":
-				matched = file.path.toLowerCase().includes(value);
-				break;
+				return file.path.includes(value);
 			case "file":
-				matched = file.basename.toLowerCase().includes(value);
-				break;
-			case "tag": {
-				const cache = app.metadataCache.getFileCache(file);
-				const inlineTags = (cache?.tags ?? []).map((t) =>
-					t.tag.toLowerCase(),
-				);
-				const fmTags: unknown = cache?.frontmatter?.tags;
-				const frontmatterTags: string[] = (
-					Array.isArray(fmTags) ? fmTags : fmTags ? [fmTags] : []
-				).map(
-					(t: unknown) => `#${String(t).toLowerCase().replace(/^#/, "")}`,
-				);
-				const wanted = `#${value.replace(/^#/, "")}`;
-				matched =
-					inlineTags.includes(wanted) || frontmatterTags.includes(wanted);
-				break;
-			}
+				return file.name.includes(value);
+			case "tag":
+				return file.tags.has(value);
 			default:
-				matched =
-					file.path.toLowerCase().includes(value) ||
-					file.basename.toLowerCase().includes(value);
+				return file.path.includes(value) || file.name.includes(value);
 		}
-		if (!matched) return false; // every term must match (AND)
-	}
-	return true;
+	});
 }
 
 function rgbIntToHex(rgb: number): string {
@@ -155,18 +182,18 @@ export function computeNodeColors(
 ): Record<string, string> {
 	const colorGroups = Array.isArray(graph.colorGroups) ? graph.colorGroups : [];
 	// Parsed once up front, not once per file.
-	const groups = colorGroups
-		.filter((g) => g.query && typeof g.color?.rgb === "number")
-		.map((g) => ({
-			tokens: tokenizeQuery(g.query),
-			color: rgbIntToHex(g.color.rgb),
-		}));
+	const groups = colorGroups.flatMap((g) => {
+		if (!g.query || typeof g.color?.rgb !== "number") return [];
+		const terms = parseQuery(g.query);
+		return terms ? [{ terms, color: rgbIntToHex(g.color.rgb) }] : [];
+	});
 	if (!groups.length) return {};
 
 	const result: Record<string, string> = {};
 	for (const file of files) {
-		if (file.extension !== "md") continue;
-		const group = groups.find((g) => matchesQuery(g.tokens, file, app));
+		if (!isNote(file)) continue;
+		const facts = new FileFacts(file, app);
+		const group = groups.find((g) => matchesQuery(g.terms, facts));
 		// Page routes (trailing slash) to match Graph.svelte's node ids,
 		// unlike the route strings used elsewhere (nameMap.json, hidden.json).
 		if (group) result[pageRouteOf(file.path)] = group.color;

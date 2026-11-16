@@ -1,4 +1,5 @@
 import { NAME_MAP } from "./exportData";
+import { foldersFirst } from "./shared";
 
 export interface TreeNode {
 	name: string;
@@ -70,17 +71,17 @@ function buildTree(): TreeNode[] {
 	return root;
 }
 
+const BY_FOLDERS_FIRST = foldersFirst<TreeNode>(
+	(n) => n.children !== undefined,
+	(n) => n.name,
+);
+
 /** Folders first (alphabetically), then files (alphabetically) — at every
  * level, not just the root. Insertion order out of the loop above just
  * follows a single global string sort of full route paths, which doesn't
  * group folders and files the way a real file explorer does. */
 function sortTree(nodes: TreeNode[]): void {
-	nodes.sort((a, b) => {
-		const aIsFolder = a.children !== undefined ? 0 : 1;
-		const bIsFolder = b.children !== undefined ? 0 : 1;
-		if (aIsFolder !== bIsFolder) return aIsFolder - bIsFolder;
-		return a.name.localeCompare(b.name);
-	});
+	nodes.sort(BY_FOLDERS_FIRST);
 	for (const n of nodes) {
 		if (n.children) sortTree(n.children);
 	}
@@ -88,11 +89,15 @@ function sortTree(nodes: TreeNode[]): void {
 
 export const siteTree: TreeNode[] = buildTree();
 
-export function flattenTree(nodes: TreeNode[]): TreeNode[] {
-	const result: TreeNode[] = [];
+/** Every page (leaf) of `nodes`, in tree order — collected into one array
+ * passed down, rather than each level copying its subtree's result. */
+export function flattenTree(
+	nodes: TreeNode[],
+	result: TreeNode[] = [],
+): TreeNode[] {
 	for (const node of nodes) {
 		if (!node.children) result.push(node);
-		else result.push(...flattenTree(node.children));
+		else flattenTree(node.children, result);
 	}
 	return result;
 }

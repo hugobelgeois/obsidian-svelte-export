@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { fileHolds } from "./obsidianUtil";
 
 /**
  * A folder of the exported project kept in sync rather than wiped and
@@ -53,14 +54,7 @@ export class SyncedFolder {
 	write(rel: string, content: string): void {
 		const dest = this.track(rel);
 		const stat = this.existingStat(dest);
-		// A different size alone tells it changed — no need to read it.
-		if (
-			stat &&
-			stat.size === Buffer.byteLength(content, "utf-8") &&
-			fs.readFileSync(dest, "utf-8") === content
-		) {
-			return;
-		}
+		if (stat && fileHolds(dest, content, stat)) return;
 		this.prepare(dest);
 		fs.writeFileSync(dest, content, "utf-8");
 	}
