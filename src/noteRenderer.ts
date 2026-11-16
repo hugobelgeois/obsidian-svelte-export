@@ -1,5 +1,5 @@
 import * as fs from "fs";
-import { App, Component, MarkdownRenderer, TFile } from "obsidian";
+import { App, Component, MarkdownRenderer, resolveSubpath, TFile } from "obsidian";
 import * as path from "path";
 import {
 	BASE_PATH_SENTINEL,
@@ -8,7 +8,7 @@ import {
 	staticFilePath,
 	staticFileUrl,
 } from "./constants";
-import { inlineRelativeUrls } from "./obsidianCss";
+import { cssRulesText, inlineRelativeUrls } from "./obsidianCss";
 import { PLUGIN_INTEGRATIONS, PluginIntegration } from "./pluginIntegrations";
 
 /**
@@ -32,7 +32,14 @@ export interface NoteDeps {
 	embeds: string[];
 	/** Link targets that matched no file. */
 	unresolved: string[];
+	/** "path#subpath" of the headings/blocks it links to — where on the
+	 * target page each link leads depends on that note's own headings.
+	 * (Optional: pages exported before it existed don't have it.) */
+	anchors?: string[];
 }
+
+/** NoteDeps while a note is being rendered — deduplicated as they come. */
+type DepSets = { [K in keyof NoteDeps]-?: Set<string> };
 
 export interface RenderedNote {
 	html: string;
@@ -41,11 +48,12 @@ export interface RenderedNote {
 	linkedRoutes: string[];
 	/** Absolute paths of local files it references — copied into static/. */
 	assets: string[];
-	/** Stylesheets under src/lib/pluginCss/ the page must import. */
-	cssIds: string[];
-	/** Integrations with a code block in the note — active or not, so a
-	 * later change to that integration knows which pages to re-export. */
-	pluginIds: string[];
+	/** Ids of the stylesheets under src/lib/pluginCss/ the page must import. */
+	css: string[];
+	/** Ids of the integrations with a code block in the note — active or
+	 * not, so a later change to that integration knows which pages to
+	 * re-export. */
+	plugins: string[];
 	deps: NoteDeps;
 	/** The note's visible text, whitespace collapsed — for site search and
 	 * the page's default description. */
@@ -66,7 +74,7 @@ const INTERACTIVE_SELECTORS = [
 	".collapse-indicator",
 	".list-collapse-indicator",
 	".callout-fold",
-];
+].join(",");
 
 const KNOWN_PLUGIN_LANGUAGES = new Map(
 	PLUGIN_INTEGRATIONS.flatMap((i) =>
@@ -94,6 +102,15 @@ export class NoteRenderer {
 	/** Stylesheet id → style id → CSS text, captured from document.head
 	 * while rendering (plugins' runtime styles, MathJax). */
 	readonly runtimeCss = new Map<string, Map<string, string>>();
+	/** Code block languages of the active integrations. */
+	private readonly activeLanguages: Set<string>;
+	/** Each active integration with interactive bits to drop, and their
+	 * selector — joined once, not once per note. */
+	private readonly removals: IntegrationRemoval[];
+	/** app:// URL → the existing local file it serves, or null — the same
+	 * image is often embedded in many notes. (The URL carries the file's
+	 * mtime, so an edited file gets a new entry.) */
+	private readonly localFiles = new Map<string, string | null>();
 
 	constructor(
 		private readonly app: App,
@@ -101,12 +118,20 @@ export class NoteRenderer {
 		private readonly active: PluginIntegration[],
 		/** Vault paths of every note in this export. */
 		private readonly exportedPaths: Set<string>,
-	) {}
+	) {
+		this.activeLanguages = new Set(active.flatMap((i) => i.codeBlockLanguages));
+		this.removals = active
+			.filter((i) => i.removeSelectors.length)
+			.map((integration) => ({
+				integration,
+				selector: integration.removeSelectors.join(","),
+			}));
+	}
 
 	async render(file: TFile, body: string): Promise<RenderedNote> {
 		const { markdown, languages } = prepareMarkdown(
 			body,
-			new Set(this.active.flatMap((i) => i.codeBlockLanguages)),
+			this.activeLanguages,
 		);
 		const el = this.getHost().createDiv();
 		const component = new Component();
@@ -125,16 +150,22 @@ export class NoteRenderer {
 				el.querySelector(ASYNC_CONTENT_SELECTOR) ? SETTLE_QUIET_MS : 50,
 			);
 
-			const deps: NoteDeps = { links: [], embeds: [], unresolved: [] };
+			const deps: DepSets = {
+				links: new Set(),
+				embeds: new Set(),
+				unresolved: new Set(),
+				anchors: new Set(),
+			};
 			const linkedRoutes = new Set<string>();
-			stripInteractivity(el, this.active);
+			labelBlocks(el);
+			stripInteractivity(el, this.removals);
 			this.rewriteEmbeds(el, file, deps, linkedRoutes);
 			this.rewriteLinks(el, file, deps, linkedRoutes);
 			el.querySelectorAll("a.tag").forEach((a) => replaceTag(a, "span"));
 			const headings = labelHeadings(el);
 			wrapTables(el);
-			const assets = rewriteLocalUrls(el, this.vaultPath);
-			const cssIds = await this.captureCss(el);
+			const assets = rewriteLocalUrls(el, this.vaultPath, this.localFiles);
+			const css = await this.captureCss(el);
 			const image =
 				el
 					.querySelector(`img[src^="${BASE_PATH_SENTINEL}"]`)
@@ -148,16 +179,17 @@ export class NoteRenderer {
 				headings,
 				linkedRoutes: [...linkedRoutes],
 				assets,
-				cssIds,
-				pluginIds: [
+				css,
+				plugins: [
 					...new Set(
 						[...languages].flatMap((l) => KNOWN_PLUGIN_LANGUAGES.get(l) ?? []),
 					),
 				],
 				deps: {
-					links: [...new Set(deps.links)],
-					embeds: [...new Set(deps.embeds)],
-					unresolved: [...new Set(deps.unresolved)],
+					links: [...deps.links],
+					embeds: [...deps.embeds],
+					unresolved: [...deps.unresolved],
+					anchors: [...deps.anchors],
 				},
 				text,
 				image,
@@ -218,7 +250,7 @@ export class NoteRenderer {
 	private rewriteEmbeds(
 		el: HTMLElement,
 		file: TFile,
-		deps: NoteDeps,
+		deps: DepSets,
 		linkedRoutes: Set<string>,
 	) {
 		for (const embed of Array.from(el.querySelectorAll(".internal-embed"))) {
@@ -226,8 +258,8 @@ export class NoteRenderer {
 			const src = embed.getAttribute("src") ?? "";
 			const { linkpath, dest } = this.resolve(src, file.path);
 			const label = embed.getAttribute("alt") || linkpath || src;
-			if (dest) deps.embeds.push(dest.path);
-			else deps.unresolved.push(linkpath);
+			if (dest) deps.embeds.add(dest.path);
+			else deps.unresolved.add(linkpath);
 			if (dest && dest.extension !== "md") continue;
 			if (!this.isExportedNote(dest)) {
 				embed.replaceWith(document.createTextNode(label));
@@ -243,29 +275,35 @@ export class NoteRenderer {
 	private rewriteLinks(
 		el: HTMLElement,
 		file: TFile,
-		deps: NoteDeps,
+		deps: DepSets,
 		linkedRoutes: Set<string>,
 	) {
 		el.querySelectorAll<HTMLAnchorElement>("a.internal-link").forEach((a) => {
 			const target = a.getAttribute("data-href") ?? a.getAttribute("href") ?? "";
 			const { linkpath, fragment, dest } = this.resolve(target, file.path);
-			if (dest) deps.links.push(dest.path);
-			else deps.unresolved.push(linkpath);
+			if (dest) deps.links.add(dest.path);
+			else deps.unresolved.add(linkpath);
 			if (!this.isExportedNote(dest)) {
 				a.replaceWith(document.createTextNode(a.textContent ?? ""));
 				return;
 			}
 			const route = routeOf(dest.path);
 			linkedRoutes.add(route);
-			// Nested heading links ("Note#H1#H2") target the last heading.
-			const heading = fragment.split("#").pop() ?? "";
+			// The heading/block the fragment points to, matched the way
+			// Obsidian follows the link ("#H1#H2", "#^block", loose spelling).
+			// None found → the top of the page, as in Obsidian.
+			let id = "";
+			if (fragment) {
+				deps.anchors.add(`${dest.path}#${fragment}`);
+				id = anchorId(this.app, dest, fragment);
+			}
 			a.setAttribute(
 				"href",
-				BASE_PATH_SENTINEL + route + (heading ? `#${slugify(heading)}` : ""),
+				BASE_PATH_SENTINEL + route + (id ? `#${encodeURIComponent(id)}` : ""),
 			);
 			// Read by LinkPreview.svelte, which adds the real base itself.
 			a.setAttribute("data-wiki-href", route);
-			a.setAttribute("data-wiki-fragment", encodeURIComponent(heading));
+			a.setAttribute("data-wiki-fragment", encodeURIComponent(id));
 			a.removeAttribute("data-href");
 			a.removeAttribute("target");
 			a.removeAttribute("rel");
@@ -277,9 +315,7 @@ export class NoteRenderer {
 	private async captureCss(el: HTMLElement): Promise<string[]> {
 		const ids: string[] = [];
 		for (const integration of this.active) {
-			const blocks = integration.codeBlockLanguages.flatMap((lang) =>
-				Array.from(el.querySelectorAll<HTMLElement>(`.block-language-${lang}`)),
-			);
+			const blocks = integrationBlocks(el, integration);
 			if (!blocks.length) continue;
 			ids.push(integration.pluginId);
 			this.captureRuntimeCss(integration, blocks);
@@ -311,11 +347,19 @@ export class NoteRenderer {
 		// Svelte 3/4 components without external CSS inject their scoped
 		// styles as <style id="svelte-HASH">, matching the class they put
 		// on every element they render.
+		// Read from the class lists — not by serializing each block's whole
+		// innerHTML just to search it.
+		const hashes = new Set<string>();
 		for (const block of blocks) {
-			for (const hash of new Set(block.innerHTML.match(/svelte-[a-z0-9]+/g))) {
-				const s = document.getElementById(hash);
-				if (s instanceof HTMLStyleElement) styleEls.add(s);
-			}
+			block.querySelectorAll("[class*='svelte-']").forEach((n) => {
+				n.classList.forEach((c) => {
+					if (/^svelte-[a-z0-9]+$/.test(c)) hashes.add(c);
+				});
+			});
+		}
+		for (const hash of hashes) {
+			const s = document.getElementById(hash);
+			if (s instanceof HTMLStyleElement) styleEls.add(s);
 		}
 		for (const s of styleEls) {
 			const css = readStyleElement(s);
@@ -345,7 +389,17 @@ export function prepareMarkdown(body: string, activeLanguages: Set<string>) {
 	let fence: string | null = null;
 	const lines = body.split("\n").map((line) => {
 		const open = line.match(/^(\s*)(`{3,}|~{3,})\s*([\w-]*)(.*)$/);
-		if (!open) return line;
+		if (!open) {
+			// Obsidian hides "^block-id"s in reading view without marking
+			// their block in the DOM — swap them for a marker that survives
+			// rendering as text, for labelBlocks() to find.
+			return fence
+				? line
+				: line.replace(
+						BLOCK_ID_SOURCE,
+						(_m, pre: string, id: string) => `${pre}${MARK_OPEN}${id}${MARK_CLOSE}`,
+					);
+		}
 		const [, indent = "", marks = "", lang = "", rest = ""] = open;
 		if (fence) {
 			if (marks.startsWith(fence) && !lang) fence = null;
@@ -379,7 +433,13 @@ export function dependencyKey(
 		return f instanceof TFile ? f : null;
 	};
 	const exported = (p: string) => (exportedPaths.has(p) ? "e" : "-");
+	const anchorAt = (anchor: string) => {
+		const hash = anchor.indexOf("#"); // file names can't contain "#"
+		const f = fileAt(anchor.slice(0, hash));
+		return f ? anchorId(app, f, anchor.slice(hash + 1)) : "";
+	};
 	return [
+		...(deps.anchors ?? []).map((a) => `A ${a} ${anchorAt(a)}`),
 		...deps.links.map((p) => `L ${p} ${fileAt(p) ? "1" : "0"} ${exported(p)}`),
 		...deps.embeds.map(
 			(p) => `E ${p} ${fileAt(p)?.stat.mtime ?? "gone"} ${exported(p)}`,
@@ -414,28 +474,107 @@ function replaceTag(el: Element, tag: string) {
 }
 
 /**
- * Gives every heading of the note itself (not those inside embeds or
- * plugin blocks) the id the site's links and table of contents use.
+ * The ids of a note's headings, given their texts in document order.
  * Repeated headings get "-1", "-2"… suffixes so each table of contents
- * entry reaches its own heading; the first keeps the bare slug, which is
- * where a [[Note#Heading]] link leads, as in Obsidian.
+ * entry reaches its own heading. Used both on the rendered headings
+ * (labelHeadings) and on the metadata cache's (anchorId), so a link
+ * computes the very id its target heading is given.
  */
-function labelHeadings(el: HTMLElement) {
-	const headings: RenderedNote["headings"] = [];
+function headingIds(texts: string[]): string[] {
 	const used = new Set<string>();
-	const selector = ":is(h1, h2, h3, h4, h5, h6)";
-	el.querySelectorAll<HTMLElement>(
-		`:scope > ${selector}, :scope > div > ${selector}`,
-	).forEach((h) => {
-		const text = (h.getAttribute("data-heading") ?? h.textContent ?? "").trim();
-		const slug = slugify(text) || "heading";
+	return texts.map((text) => {
+		const slug = slugify(text.trim()) || "heading";
 		let id = slug;
 		for (let i = 1; used.has(id); i++) id = `${slug}-${i}`;
 		used.add(id);
-		h.id = id;
-		headings.push({ id, text, level: Number(h.tagName[1]) });
+		return id;
 	});
-	return headings;
+}
+
+/**
+ * The site id of what `subpath` ("Heading", "H1#H2", "^block-id") points
+ * to in `file`, found with Obsidian's own resolveSubpath() — the same
+ * lenient matching it uses to follow the link — or "" when it matches
+ * nothing (or a footnote), so the link leads to the top of the page.
+ */
+export function anchorId(app: App, file: TFile, subpath: string): string {
+	const cache = app.metadataCache.getFileCache(file);
+	const target = cache && resolveSubpath(cache, `#${subpath}`);
+	if (!target) return "";
+	if (target.type === "block") return blockId(target.block.id);
+	if (target.type !== "heading") return "";
+	const headings = cache.headings ?? [];
+	const offset = target.current.position.start.offset;
+	const index = headings.findIndex((h) => h.position.start.offset === offset);
+	return headingIds(headings.map((h) => h.heading))[index] ?? "";
+}
+
+/** The site id of a block's "^id". */
+const blockId = (id: string) => `^${id}`;
+
+/**
+ * Gives every heading of the note itself (not those inside embeds or
+ * plugin blocks) the id the site's links and table of contents use (see
+ * headingIds).
+ */
+function labelHeadings(el: HTMLElement) {
+	const selector = ":is(h1, h2, h3, h4, h5, h6)";
+	const els = Array.from(
+		el.querySelectorAll<HTMLElement>(
+			`:scope > ${selector}, :scope > div > ${selector}`,
+		),
+	);
+	const texts = els.map((h) =>
+		(h.getAttribute("data-heading") ?? h.textContent ?? "").trim(),
+	);
+	const ids = headingIds(texts);
+	return els.map((h, i): RenderedNote["headings"][number] => {
+		const id = ids[i] ?? "heading";
+		h.id = id;
+		return { id, text: texts[i] ?? "", level: Number(h.tagName[1]) };
+	});
+}
+
+/** A "^block-id" at the end of a source line (as Obsidian recognizes them). */
+const BLOCK_ID_SOURCE = /(^|\s)\^([A-Za-z0-9-]+)(?=\s*$)/;
+/** Private-use characters around a block id prepareMarkdown() marked. */
+const MARK_OPEN = "";
+const MARK_CLOSE = "";
+const BLOCK_MARK = /\s*([A-Za-z0-9-]+)/g;
+
+/**
+ * Puts each block id prepareMarkdown() marked onto its rendered block —
+ * the list item, paragraph or table cell holding it, else the note's
+ * top-level block (a heading's own id is its slug, so a heading's block id
+ * goes on its wrapper) — and removes the marker. An id on a line of its
+ * own (how Obsidian marks a list, table or quote) ends up alone in a
+ * paragraph: it then labels the block before it.
+ */
+function labelBlocks(el: HTMLElement) {
+	const marked: Text[] = [];
+	const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+	for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+		if (n.nodeValue?.includes(MARK_OPEN)) marked.push(n as Text);
+	}
+	const topLevel = (n: Node): Element | null => {
+		let cur: Node | null = n;
+		while (cur && cur.parentNode !== el) cur = cur.parentNode;
+		return cur instanceof Element ? cur : null;
+	};
+	for (const node of marked) {
+		const ids = Array.from(node.data.matchAll(BLOCK_MARK), (m) => m[1] ?? "");
+		node.data = node.data.replace(BLOCK_MARK, "");
+		const holder = node.parentElement?.closest("li, p, td, th");
+		let target: Element | null =
+			holder && el.contains(holder) ? holder : topLevel(node);
+		if (holder?.tagName === "P" && !holder.textContent?.trim()) {
+			const block = topLevel(holder);
+			target = block?.previousElementSibling ?? null;
+			block?.remove();
+		}
+		const id = ids[ids.length - 1];
+		if (target && id) target.id = blockId(id);
+	}
 }
 
 /**
@@ -455,19 +594,28 @@ function wrapTables(el: HTMLElement) {
 	});
 }
 
-function stripInteractivity(el: HTMLElement, active: PluginIntegration[]) {
-	el.querySelectorAll(INTERACTIVE_SELECTORS.join(",")).forEach((n) =>
-		n.remove(),
+/** The rendered blocks of `integration`'s code block languages in `el`. */
+function integrationBlocks(
+	el: HTMLElement,
+	integration: PluginIntegration,
+): HTMLElement[] {
+	return integration.codeBlockLanguages.flatMap((lang) =>
+		Array.from(el.querySelectorAll<HTMLElement>(`.block-language-${lang}`)),
 	);
+}
+
+interface IntegrationRemoval {
+	integration: PluginIntegration;
+	/** Its removeSelectors, joined. */
+	selector: string;
+}
+
+function stripInteractivity(el: HTMLElement, removals: IntegrationRemoval[]) {
+	el.querySelectorAll(INTERACTIVE_SELECTORS).forEach((n) => n.remove());
 	// Each integration's own interactive bits, only inside its own blocks.
-	for (const integration of active) {
-		if (!integration.removeSelectors.length) continue;
-		for (const lang of integration.codeBlockLanguages) {
-			el.querySelectorAll(`.block-language-${lang}`).forEach((block) =>
-				block
-					.querySelectorAll(integration.removeSelectors.join(","))
-					.forEach((n) => n.remove()),
-			);
+	for (const { integration, selector } of removals) {
+		for (const block of integrationBlocks(el, integration)) {
+			block.querySelectorAll(selector).forEach((n) => n.remove());
 		}
 	}
 	// Foldable callouts can't be unfolded on the static site — show them open.
@@ -544,12 +692,22 @@ export function assetStaticPath(absolutePath: string, vaultPath: string): string
  * Obsidian serves local files as app://<id>/<absolute path>?<mtime> — those
  * are rewritten to where the file is served on the site (see
  * assetStaticPath) and returned so the caller copies them there.
+ * `localFiles` caches each URL's file across notes (see NoteRenderer).
  */
-function rewriteLocalUrls(el: HTMLElement, vaultPath: string): string[] {
+function rewriteLocalUrls(
+	el: HTMLElement,
+	vaultPath: string,
+	localFiles: Map<string, string | null>,
+): string[] {
 	const assets = new Set<string>();
 	const toSiteUrl = (url: string): string | null => {
-		const filePath = appUrlToPath(url);
-		if (!filePath || !fs.existsSync(filePath)) return null;
+		let filePath = localFiles.get(url);
+		if (filePath === undefined) {
+			const p = appUrlToPath(url);
+			filePath = p && fs.existsSync(p) ? p : null;
+			localFiles.set(url, filePath);
+		}
+		if (!filePath) return null;
 		assets.add(filePath);
 		return staticFileUrl(assetStaticPath(filePath, vaultPath));
 	};
@@ -589,12 +747,8 @@ function appUrlToPath(url: string): string | null {
 function readStyleElement(s: HTMLStyleElement): string {
 	// Rules added through insertRule() never show up in textContent.
 	try {
-		const rules = s.sheet?.cssRules;
-		if (rules?.length) {
-			return Array.from(rules)
-				.map((r) => r.cssText)
-				.join("\n");
-		}
+		const css = s.sheet ? cssRulesText(s.sheet) : "";
+		if (css) return css;
 	} catch {
 		// fall through
 	}

@@ -19,6 +19,22 @@ export function getVaultBasePath(app: App): string {
 }
 
 /**
+ * Absolute path of a community plugin's folder: its manifest's `dir` when
+ * known (relative to the vault), else where Obsidian installs plugins.
+ */
+export function pluginFolderPath(
+	app: App,
+	vaultPath: string,
+	pluginId: string,
+	manifestDir: string | undefined,
+): string {
+	return path.join(
+		vaultPath,
+		manifestDir ?? `${app.vault.configDir}/plugins/${pluginId}`,
+	);
+}
+
+/**
  * Resolves the "Destination path" setting to an absolute path.
  *
  * A relative value (e.g. `../aerethios-page` or `export-site`) is resolved
@@ -56,11 +72,24 @@ export function toVaultRelativePath(
 	return chosen.slice(vault.length + 1);
 }
 
-/** Parsed JSON file, or `fallback` if it's missing or unreadable. */
-export function readJsonFile<T>(filePath: string, fallback: T): T {
+/** Parsed JSON file, or `fallback` if it's missing or unreadable. With a
+ * `label`, a file that exists but isn't valid JSON is also reported in the
+ * console under that name. */
+export function readJsonFile<T>(
+	filePath: string,
+	fallback: T,
+	label?: string,
+): T {
+	let text: string;
 	try {
-		return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
+		text = fs.readFileSync(filePath, "utf-8");
 	} catch {
+		return fallback;
+	}
+	try {
+		return JSON.parse(text) as T;
+	} catch {
+		if (label) console.warn(`[SvelteExporter] Could not parse ${label}`);
 		return fallback;
 	}
 }
@@ -74,7 +103,7 @@ export function writeJsonFile(filePath: string, data: unknown): void {
  * that. An unchanged file keeps its mtime, so a running `npm run dev`
  * doesn't reload (or rebuild) for files an export rewrote identically.
  */
-function writeFileIfChanged(filePath: string, content: string): void {
+export function writeFileIfChanged(filePath: string, content: string): void {
 	try {
 		if (fs.readFileSync(filePath, "utf-8") === content) return;
 	} catch {
@@ -83,5 +112,5 @@ function writeFileIfChanged(filePath: string, content: string): void {
 	fs.writeFileSync(filePath, content, "utf-8");
 }
 
-/** Records the mtime of every exported file — see SiteExporter in exporter.ts. */
+/** Records the mtime of every exported file — see exportState.ts. */
 export const EXPORT_CACHE_FILE = ".export-cache.json";

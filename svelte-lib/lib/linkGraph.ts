@@ -1,13 +1,9 @@
 import { LINKS } from "./exportData";
+import { withSlash } from "./routePath";
 
 export interface LinkEdge {
 	source: string;
 	target: string;
-}
-
-/** Route format used elsewhere (siteTree/Graph node ids) always ends in "/". */
-function normalize(route: string): string {
-	return route.endsWith("/") ? route : route + "/";
 }
 
 /**
@@ -20,11 +16,11 @@ export function getLinkEdges(): LinkEdge[] {
 	const seen = new Set<string>();
 
 	for (const [source, targets] of Object.entries(LINKS)) {
-		const s = normalize(source);
+		const s = withSlash(source);
 		for (const rawTarget of targets) {
-			const t = normalize(rawTarget);
+			const t = withSlash(rawTarget);
 			if (s === t) continue;
-			const key = [s, t].sort().join("|");
+			const key = s < t ? `${s}|${t}` : `${t}|${s}`;
 			if (seen.has(key)) continue;
 			seen.add(key);
 			edges.push({ source: s, target: t });

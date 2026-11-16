@@ -52,8 +52,11 @@ export class SyncedFolder {
 	/** Writes generated content to `rel`, unless it already holds it. */
 	write(rel: string, content: string): void {
 		const dest = this.track(rel);
+		const stat = this.existingStat(dest);
+		// A different size alone tells it changed — no need to read it.
 		if (
-			this.existingStat(dest) &&
+			stat &&
+			stat.size === Buffer.byteLength(content, "utf-8") &&
 			fs.readFileSync(dest, "utf-8") === content
 		) {
 			return;

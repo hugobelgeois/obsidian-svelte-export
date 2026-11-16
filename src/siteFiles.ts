@@ -1,9 +1,19 @@
 import * as fs from "fs";
 import { moment, Notice, TFile } from "obsidian";
 import * as path from "path";
-import { routeOf } from "./constants";
+import {
+	COLOR_MODE_KEY,
+	isWithinAny,
+	mimeTypeOf,
+	pageRouteOf,
+	routeOf,
+} from "./constants";
 import type { ExportContext } from "./exporter";
-import { computeGraphForces, computeNodeColors } from "./obsidianGraph";
+import {
+	computeGraphForces,
+	computeNodeColors,
+	readGraphJson,
+} from "./obsidianGraph";
 import type { ActiveCss } from "./obsidianCss";
 import { writeJsonFile } from "./obsidianUtil";
 import type { SiteInfo } from "./pageexporter";
@@ -12,7 +22,7 @@ import { SyncedFolder } from "./syncedFolder";
 
 /**
  * Everything an export writes into the SvelteKit project besides the notes'
- * own pages (pageexporter.ts) and the export's state files (exporter.ts):
+ * own pages (pageexporter.ts) and the export's state files (exportState.ts):
  * the site's data files, root page, app.html tweaks, custom scripts, search
  * index and sitemap.
  */
@@ -29,10 +39,11 @@ export function writeSiteData(
 	const writeLibJson = (name: string, data: unknown) =>
 		writeJsonFile(path.join(libDir, name), data);
 
+	const graph = readGraphJson(obsidianDir);
 	writeLibJson("graphConfig.json", {
 		animationType: settings.graphAnimationType,
 		// Same physics settings as the vault's own graph view.
-		forces: computeGraphForces(obsidianDir),
+		forces: computeGraphForces(graph),
 	});
 	writeLibJson("themeConfig.json", {
 		defaultColorMode: settings.defaultColorMode,
@@ -62,7 +73,7 @@ export function writeSiteData(
 	writeLibJson(
 		"nodeColors.json",
 		settings.exportGraphColors
-			? computeNodeColors(app, obsidianDir, files)
+			? computeNodeColors(app, graph, files)
 			: {},
 	);
 
@@ -151,16 +162,6 @@ export function defaultPageFiles(
 	};
 }
 
-const FAVICON_MIME_TYPES: Record<string, string> = {
-	".png": "image/png",
-	".svg": "image/svg+xml",
-	".ico": "image/x-icon",
-	".jpg": "image/jpeg",
-	".jpeg": "image/jpeg",
-	".gif": "image/gif",
-	".webp": "image/webp",
-};
-
 /**
  * Patches app.html — `sv create`'s, generated once and never touched
  * again by copyPluginFiles, so it's edited in place, on every export,
@@ -201,7 +202,7 @@ export function patchAppHtml(
 		if (fs.existsSync(srcPath)) {
 			const ext = path.extname(srcPath).toLowerCase() || ".png";
 			staticFiles.copy(srcPath, `favicon${ext}`);
-			const mime = FAVICON_MIME_TYPES[ext] ?? "image/png";
+			const mime = mimeTypeOf(ext) ?? "image/png";
 			// %sveltekit.assets% (not a hardcoded "/favicon...") — this
 			// placeholder is filled in by SvelteKit itself with the
 			// correct base-prefixed assets path, so the icon still
@@ -226,9 +227,6 @@ export function patchAppHtml(
 
 	if (html !== original) fs.writeFileSync(appHtmlPath, html, "utf-8");
 }
-
-/** Must match COLOR_MODE_KEY in svelte-lib/routes/+layout.svelte. */
-const COLOR_MODE_KEY = "svelte-exporter-color-mode";
 
 /** The inline <body> script of patchAppHtml(): the visitor's saved color
  * mode (see toggleTheme in +layout.svelte), or the default one. */
@@ -278,29 +276,22 @@ export function writeCustomScripts(ctx: ExportContext) {
 	scripts.prune();
 }
 
-/** Whether `p` is `ancestor` itself or somewhere under it. */
-function isWithin(p: string, ancestor: string): boolean {
-	return p === ancestor || p.startsWith(ancestor + "/");
-}
-
 /** `paths` without those under another one of them. */
 export function topmostPaths(paths: string[]): string[] {
-	const sorted = [...new Set(paths)].sort();
-	const result: string[] = [];
-	for (const p of sorted) {
-		// Sorted, so an ancestor comes before everything under it — though
-		// not always right before ("A" < "A b" < "A/c"), hence some().
-		if (!result.some((r) => isWithin(p, r))) result.push(p);
+	const kept = new Set<string>();
+	// Sorted, so an ancestor is kept before anything under it is checked.
+	for (const p of [...new Set(paths)].sort()) {
+		if (!isWithinAny(p, kept)) kept.add(p);
 	}
-	return result;
+	return [...kept];
 }
 
 /** Notes the site lists (file tree, search, sitemap): exported, and
  * not hidden from the file tree themselves or through a folder. */
 export function listedNotes(files: TFile[], hiddenPaths: string[]): TFile[] {
-	const hidden = topmostPaths(hiddenPaths);
+	const hidden = new Set(hiddenPaths);
 	return files.filter(
-		(f) => f.extension === "md" && !hidden.some((h) => isWithin(f.path, h)),
+		(f) => f.extension === "md" && !isWithinAny(f.path, hidden),
 	);
 }
 
@@ -341,7 +332,7 @@ export function writeSitemap(
 		`</url>`;
 	const urls = [
 		url("/"),
-		...notes.map((f) => url(routeOf(f.path) + "/", f.stat.mtime)),
+		...notes.map((f) => url(pageRouteOf(f.path), f.stat.mtime)),
 	];
 	staticFiles.write(
 		"sitemap.xml",

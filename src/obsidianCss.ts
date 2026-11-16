@@ -1,5 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
+import { mimeTypeOf } from "./constants";
+import { readJsonFile } from "./obsidianUtil";
 
 /**
  * Captures the CSS Obsidian itself is running with, straight from the live
@@ -38,9 +40,7 @@ export async function captureObsidianBaseCss(): Promise<string> {
 	}
 	if (!cssText) {
 		try {
-			cssText = Array.from(sheet.cssRules)
-				.map((r) => r.cssText)
-				.join("\n");
+			cssText = cssRulesText(sheet);
 		} catch (e) {
 			console.warn("[SvelteExporter] Could not read app.css rules", e);
 			return "";
@@ -89,7 +89,9 @@ export async function inlineRelativeUrls(css: string, baseHref: string): Promise
 				const res = await fetch(new URL(ref, baseHref).href);
 				if (!res.ok) return;
 				const type =
-					res.headers.get("content-type") || guessMimeType(ref);
+					res.headers.get("content-type") ||
+					mimeTypeOf(ref) ||
+					"application/octet-stream";
 				const data = Buffer.from(await res.arrayBuffer()).toString(
 					"base64",
 				);
@@ -106,31 +108,12 @@ export async function inlineRelativeUrls(css: string, baseHref: string): Promise
 	});
 }
 
-function guessMimeType(ref: string): string {
-	const ext = ref.split(/[?#]/)[0]?.split(".").pop()?.toLowerCase();
-	switch (ext) {
-		case "woff2":
-			return "font/woff2";
-		case "woff":
-			return "font/woff";
-		case "ttf":
-			return "font/ttf";
-		case "otf":
-			return "font/otf";
-		case "svg":
-			return "image/svg+xml";
-		case "png":
-			return "image/png";
-		case "jpg":
-		case "jpeg":
-			return "image/jpeg";
-		case "gif":
-			return "image/gif";
-		case "webp":
-			return "image/webp";
-		default:
-			return "application/octet-stream";
-	}
+/** A stylesheet's rules as CSS text, as Chromium parsed them. Throws if
+ * the sheet's rules can't be read. */
+export function cssRulesText(sheet: CSSStyleSheet): string {
+	return Array.from(sheet.cssRules)
+		.map((r) => r.cssText)
+		.join("\n");
 }
 
 /** CSS captured from the running Obsidian instance — see the capture*() functions above. */
@@ -161,16 +144,10 @@ export function readActiveCss(
 	obsidianDir: string,
 	selectedTheme: string,
 ): ActiveCss {
-	let appearance: { cssTheme?: string; enabledCssSnippets?: string[] } = {};
-	const appearancePath = path.join(obsidianDir, "appearance.json");
-	if (fs.existsSync(appearancePath)) {
-		try {
-			appearance = JSON.parse(fs.readFileSync(appearancePath, "utf-8")) as
-				typeof appearance;
-		} catch {
-			console.warn("[SvelteExporter] Could not parse appearance.json");
-		}
-	}
+	const appearance = readJsonFile<{
+		cssTheme?: string;
+		enabledCssSnippets?: string[];
+	}>(path.join(obsidianDir, "appearance.json"), {}, "appearance.json");
 
 	// selectedTheme="" → follow Obsidian; "__none__" → no theme; else → use named theme
 	const cssTheme =

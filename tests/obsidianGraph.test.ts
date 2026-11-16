@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
-import { computeGraphForces } from "../src/obsidianGraph";
+import { computeGraphForces, readGraphJson } from "../src/obsidianGraph";
 
 describe("computeGraphForces", () => {
 	const dirs: string[] = [];
@@ -19,7 +19,7 @@ describe("computeGraphForces", () => {
 	});
 
 	it("falls back to the forces of Obsidian's default sliders", () => {
-		const forces = computeGraphForces(obsidianDir());
+		const forces = computeGraphForces(readGraphJson(obsidianDir()));
 		expect(forces.centerStrength).toBeCloseTo(0.1);
 		expect(forces.repelStrength).toBe(1000);
 		expect(forces.linkStrength).toBeCloseTo(1);
@@ -28,12 +28,14 @@ describe("computeGraphForces", () => {
 
 	it("converts slider positions the way Obsidian does", () => {
 		const forces = computeGraphForces(
-			obsidianDir({
-				centerStrength: 1,
-				repelStrength: 2,
-				linkStrength: 0,
-				linkDistance: 100,
-			}),
+			readGraphJson(
+				obsidianDir({
+					centerStrength: 1,
+					repelStrength: 2,
+					linkStrength: 0,
+					linkDistance: 100,
+				}),
+			),
 		);
 		expect(forces.centerStrength).toBeCloseTo(1);
 		expect(forces.repelStrength).toBe(8); // cubed

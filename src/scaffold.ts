@@ -4,7 +4,11 @@ import { Notice } from "obsidian";
 import * as path from "path";
 import type { ExportContext } from "./exporter";
 import type { ActiveCss, ObsidianCss } from "./obsidianCss";
-import { readJsonFile, writeJsonFile } from "./obsidianUtil";
+import {
+	readJsonFile,
+	writeFileIfChanged,
+	writeJsonFile,
+} from "./obsidianUtil";
 import { SyncedFolder } from "./syncedFolder";
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -257,21 +261,13 @@ async function withStaticAdapter(
 	if (original.includes("adapter-static")) return original; // already patched
 	let content = original;
 
-	const pkgPath = path.join(destRoot, "package.json");
-	let hasAdapterStatic = false;
-	if (fs.existsSync(pkgPath)) {
-		try {
-			const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as {
-				dependencies?: Record<string, string>;
-				devDependencies?: Record<string, string>;
-			};
-			hasAdapterStatic =
-				!!pkg.dependencies?.["@sveltejs/adapter-static"] ||
-				!!pkg.devDependencies?.["@sveltejs/adapter-static"];
-		} catch {
-			console.warn("[SvelteExporter] Could not parse package.json");
-		}
-	}
+	const pkg = readJsonFile<{
+		dependencies?: Record<string, string>;
+		devDependencies?: Record<string, string>;
+	}>(path.join(destRoot, "package.json"), {}, "package.json");
+	const hasAdapterStatic =
+		!!pkg.dependencies?.["@sveltejs/adapter-static"] ||
+		!!pkg.devDependencies?.["@sveltejs/adapter-static"];
 
 	if (!hasAdapterStatic) {
 		try {
@@ -396,17 +392,15 @@ jobs:
 `;
 
 /**
- * Always (re)written, like every other plugin-owned template — see
- * copyPluginFiles' own doc comment for why overwriting unconditionally is
- * the right call here rather than only writing it once.
+ * Kept up to date on every export, like every other plugin-owned template
+ * (an edited copy is overwritten) — but only written when it differs.
  */
 function writeGitHubPagesWorkflow(destRoot: string): void {
 	const workflowDir = path.join(destRoot, ".github", "workflows");
 	fs.mkdirSync(workflowDir, { recursive: true });
-	fs.writeFileSync(
+	writeFileIfChanged(
 		path.join(workflowDir, "deploy.yml"),
 		GITHUB_PAGES_WORKFLOW,
-		"utf-8",
 	);
 }
 

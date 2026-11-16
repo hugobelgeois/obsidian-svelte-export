@@ -5,8 +5,10 @@
 	import LinkPreview from "$lib/LinkPreview.svelte";
 	import Icon from "$lib/Icon.svelte";
 	import RightSidebar from "$lib/RightSidebar.svelte";
-	import ThemeIcon from "$lib/ThemeIcon.svelte";
+	import ThemeToggle from "$lib/ThemeToggle.svelte";
 	import { DEFAULT_COLOR_MODE, STYLE_SETTINGS_CLASSES } from "$lib/exportData";
+	import { COLOR_MODE_KEY } from "$lib/shared";
+	import { isMobileWidth } from "$lib/viewport";
 	import type { Snippet } from "svelte";
 	import { onMount, tick } from "svelte";
 	import { afterNavigate } from "$app/navigation";
@@ -37,11 +39,6 @@
 	// a standalone copy of that toggle is rendered here instead — see
 	// themeToggleButton below.
 	let onGraphPage = $derived(!!page.data.isGraphPage);
-
-	/** Where the visitor's own color mode choice is saved. Must match
-	 * COLOR_MODE_KEY in the plugin's src/siteFiles.ts, whose script in
-	 * app.html applies it before the page is first painted. */
-	const COLOR_MODE_KEY = "svelte-exporter-color-mode";
 
 	let theme: "dark" | "light" = $state(DEFAULT_COLOR_MODE);
 
@@ -86,13 +83,13 @@
 	// for both, so this only kicks in below the mobile breakpoint.
 	function openLeft() {
 		leftCollapsed = false;
-		if (window.innerWidth <= 768) rightCollapsed = true;
+		if (isMobileWidth()) rightCollapsed = true;
 	}
 
 	function openRight() {
 		if (onGraphPage) return; // not rendered on this route — nothing to open
 		rightCollapsed = false;
-		if (window.innerWidth <= 768) leftCollapsed = true;
+		if (isMobileWidth()) leftCollapsed = true;
 	}
 
 	// On mobile an open sidebar overlays the note, leaving only a strip of it
@@ -100,7 +97,7 @@
 	// scrim behind a drawer. The tap is swallowed (returns true) so it
 	// doesn't also follow a link that happened to be under the finger.
 	function collapseSidebarsOnMobile(): boolean {
-		if (window.innerWidth > 768) return false;
+		if (!isMobileWidth()) return false;
 		if (leftCollapsed && rightCollapsed) return false;
 		leftCollapsed = true;
 		rightCollapsed = true;
@@ -125,7 +122,7 @@
 
 		// Both start collapsed (see the $state default above) — open them
 		// back up here if the screen actually has room for them.
-		if (window.innerWidth > 768) {
+		if (!isMobileWidth()) {
 			leftCollapsed = false;
 			rightCollapsed = false;
 		}
@@ -204,14 +201,11 @@
 	     revealButton above (a position:fixed button outside every box that
 	     could clip or reposition it). -->
 	{#if onGraphPage}
-		<button
+		<ThemeToggle
 			class="sidebar-reveal-btn right theme-toggle-btn"
-			aria-label="Toggle light/dark mode"
-			title="Toggle light/dark mode"
-			onclick={toggleTheme}
-		>
-			<ThemeIcon {theme} />
-		</button>
+			{theme}
+			{toggleTheme}
+		/>
 	{/if}
 
 	<!-- Hover previews of every page's internal links — mounted once here,

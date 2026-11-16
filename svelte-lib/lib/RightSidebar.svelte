@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Graph from "$lib/Graph.svelte";
-	import ThemeIcon from "$lib/ThemeIcon.svelte";
+	import ThemeToggle from "$lib/ThemeToggle.svelte";
 	import Toc from "$lib/Toc.svelte";
 	import SidebarShell from "$lib/SidebarShell.svelte";
 
@@ -15,13 +15,11 @@
 
 <SidebarShell side="right" {collapsed} {toggleCollapsed}>
 	{#snippet headerAfter()}
-		<button
+		<ThemeToggle
 			class="clickable-icon nav-action-button"
-			aria-label="Toggle light/dark mode"
-			onclick={toggleTheme}
-		>
-			<ThemeIcon {theme} />
-		</button>
+			{theme}
+			{toggleTheme}
+		/>
 	{/snippet}
 
 	<div

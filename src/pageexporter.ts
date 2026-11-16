@@ -1,5 +1,9 @@
 import { App, TFile } from "obsidian";
-import { BASE_PATH_SENTINEL, routeOf, sanitizeRoutePath } from "./constants";
+import {
+	BASE_PATH_SENTINEL,
+	pageRouteOf,
+	sanitizeRoutePath,
+} from "./constants";
 import { NoteRenderer, RenderedNote } from "./noteRenderer";
 import type { SyncedFolder } from "./syncedFolder";
 
@@ -10,11 +14,11 @@ import type { SyncedFolder } from "./syncedFolder";
  * matching svelte-lib/ files (e.g. a renamed import) — every cached page is
  * then regenerated on the next export instead of being skipped.
  */
-export const PAGE_FORMAT_VERSION = 7;
+export const PAGE_FORMAT_VERSION = 8;
 
 export type ExportResult = Pick<
 	RenderedNote,
-	"linkedRoutes" | "assets" | "cssIds" | "pluginIds" | "deps" | "text"
+	"linkedRoutes" | "assets" | "css" | "plugins" | "deps" | "text"
 >;
 
 /** Site-wide details every page's sharing metadata (OpenGraph) uses. */
@@ -58,9 +62,7 @@ export async function exportFile(
 	const [svelteFile, tsFile] = pageFiles(file.path);
 	pages.write(svelteFile, pageSvelte);
 	pages.write(tsFile, pageTs);
-
-	const { linkedRoutes, assets, cssIds, pluginIds, deps, text } = rendered;
-	return { linkedRoutes, assets, cssIds, pluginIds, deps, text };
+	return rendered;
 }
 
 /**
@@ -127,7 +129,7 @@ function headMetadata(
 	if (summary) tags += metaTag("property", "og:description", summary);
 	if (site.name) tags += metaTag("property", "og:site_name", site.name);
 	if (site.url) {
-		const route = routeOf(file.path) + "/";
+		const route = pageRouteOf(file.path);
 		tags += metaTag("property", "og:url", site.url + encodeURI(route));
 		if (rendered.image) {
 			const image =
@@ -165,9 +167,9 @@ function noteToSvelte(
 	const titleExpr = `{${JSON.stringify(pageTitle)}}`;
 	const descriptionExpr = `{${JSON.stringify(pageDescription)}}`;
 
-	// Written by writePluginCss() in exporter.ts — imported only by the pages
+	// Written by writePluginCss() in exportState.ts — imported only by the pages
 	// that need it, since a plugin's stylesheet can be large.
-	const cssImports = rendered.cssIds
+	const cssImports = rendered.css
 		.map((id) => `\n  import "$lib/pluginCss/${id}.css";`)
 		.join("");
 

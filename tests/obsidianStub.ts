@@ -21,4 +21,5 @@ export class FileSystemAdapter {}
 export class Component {}
 export class Notice {}
 export const MarkdownRenderer = {};
+export const resolveSubpath = () => null;
 export const moment = { locale: () => "en" };

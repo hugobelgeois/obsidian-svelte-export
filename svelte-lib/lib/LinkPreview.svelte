@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { afterNavigate } from "$app/navigation";
 	import { onMount } from "svelte";
+	import CloseIcon from "$lib/CloseIcon.svelte";
 	import Icon from "$lib/Icon.svelte";
 	import { fetchWikiHtml } from "$lib/wikiFetch";
 
@@ -193,14 +194,7 @@
 				</Icon>
 			</button>
 			<button class="wiki-preview-btn" title="Close" onclick={closePanel}>
-				<Icon size={14} class="">
-					<line x1="18" y1="6" x2="6" y2="18" /><line
-						x1="6"
-						y1="6"
-						x2="18"
-						y2="18"
-					/>
-				</Icon>
+				<CloseIcon size={14} class="" />
 			</button>
 		</div>
 

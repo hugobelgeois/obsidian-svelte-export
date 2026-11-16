@@ -1,12 +1,13 @@
 import * as fs from "fs";
 import { Notice, Plugin, TAbstractFile, TFile } from "obsidian";
 import * as path from "path";
-import { IMAGE_EXTENSIONS } from "./constants";
+import { isExportable, isWithin } from "./constants";
 import { ExportProgressModal } from "./exportModal";
 import { SiteExporter } from "./exporter";
 import {
 	EXPORT_CACHE_FILE,
 	getVaultBasePath,
+	pluginFolderPath,
 	resolveDestinationPath,
 } from "./obsidianUtil";
 import {
@@ -77,18 +78,11 @@ export default class SvelteExporterPlugin extends Plugin {
 	 */
 	private remapStoredPaths(oldPath: string, newPath: string): boolean {
 		let changed = false;
-		const oldPrefix = oldPath + "/";
 		const remap = (paths: string[]): string[] =>
 			paths.map((p) => {
-				if (p === oldPath) {
-					changed = true;
-					return newPath;
-				}
-				if (p.startsWith(oldPrefix)) {
-					changed = true;
-					return newPath + "/" + p.slice(oldPrefix.length);
-				}
-				return p;
+				if (!isWithin(p, oldPath)) return p;
+				changed = true;
+				return newPath + p.slice(oldPath.length);
 			});
 		this.settings.selectedPaths = remap(this.settings.selectedPaths);
 		this.settings.hiddenPaths = remap(this.settings.hiddenPaths);
@@ -212,8 +206,7 @@ export default class SvelteExporterPlugin extends Plugin {
 				this.app.vault.getAbstractFileByPath(p);
 			if (
 				node instanceof TFile &&
-				(node.extension === "md" ||
-					IMAGE_EXTENSIONS.has(node.extension)) &&
+				isExportable(node) &&
 				!seen.has(node.path)
 			) {
 				seen.add(node.path);
@@ -225,10 +218,11 @@ export default class SvelteExporterPlugin extends Plugin {
 
 	/** Absolute path of this plugin's own folder (holds svelte-lib/). */
 	getPluginDir(): string {
-		return path.join(
+		return pluginFolderPath(
+			this.app,
 			getVaultBasePath(this.app),
-			this.manifest.dir ??
-				`${this.app.vault.configDir}/plugins/${this.manifest.id}`,
+			this.manifest.id,
+			this.manifest.dir,
 		);
 	}
 

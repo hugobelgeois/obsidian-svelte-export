@@ -1,3 +1,5 @@
+import { BASE_PATH_SENTINEL } from "../svelte-lib/lib/shared";
+
 export const IMAGE_EXTENSIONS = new Set([
 	"png",
 	"jpg",
@@ -8,19 +10,72 @@ export const IMAGE_EXTENSIONS = new Set([
 	"avif",
 ]);
 
+/** Whether the export handles `file` at all: notes and images. */
+export function isExportable(file: { extension: string }): boolean {
+	return file.extension === "md" || IMAGE_EXTENSIONS.has(file.extension);
+}
+
+/** Whether vault path `p` is `ancestor` itself or somewhere under it. */
+export function isWithin(p: string, ancestor: string): boolean {
+	return p === ancestor || p.startsWith(ancestor + "/");
+}
+
+/** Whether vault path `p` is in `paths`, or under one of them — one lookup
+ * per folder level of `p`, however many `paths` there are. */
+export function isWithinAny(p: string, paths: Set<string>): boolean {
+	if (paths.has(p)) return true;
+	for (let i = p.lastIndexOf("/"); i > 0; i = p.lastIndexOf("/", i - 1)) {
+		if (paths.has(p.slice(0, i))) return true;
+	}
+	return false;
+}
+
+/** File extension → MIME type, for the files an export serves or inlines. */
+const MIME_TYPES: Record<string, string> = {
+	png: "image/png",
+	jpg: "image/jpeg",
+	jpeg: "image/jpeg",
+	gif: "image/gif",
+	webp: "image/webp",
+	avif: "image/avif",
+	svg: "image/svg+xml",
+	ico: "image/x-icon",
+	woff2: "font/woff2",
+	woff: "font/woff",
+	ttf: "font/ttf",
+	otf: "font/otf",
+};
+
+/** The MIME type of a file name/path/URL by its extension (query string
+ * and fragment ignored) — undefined if unknown. */
+export function mimeTypeOf(name: string): string | undefined {
+	const file = name.split(/[?#]/)[0] ?? "";
+	const dot = file.lastIndexOf(".");
+	return dot === -1 ? undefined : MIME_TYPES[file.slice(dot + 1).toLowerCase()];
+}
+
+// Shared with the exported site — defined once, in svelte-lib/lib/shared.ts.
+export { BASE_PATH_SENTINEL, COLOR_MODE_KEY } from "../svelte-lib/lib/shared";
+
+/** Strip diacritics (é→e, è→e, ç→c, …). */
+export function stripDiacritics(str: string): string {
+	return str.normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
 /**
- * Placeholder prefix stamped onto every root-relative URL noteRenderer.ts
- * generates (internal link hrefs, image srcs, …) — swapped for the site's
- * real SvelteKit `base` path at runtime by svelte-lib/lib/basePath.ts.
- * Routes are baked into the exported .svelte files as plain string literals
- * at export time, long before the SvelteKit build (and its `base` config)
- * even exists, so this placeholder is what lets the same generated markup
- * work whether the site is served at "/" or under a GitHub Pages-style
- * "/<repo>/" subpath. Must stay byte-for-byte identical to BASE_SENTINEL in
- * basePath.ts (a separate module graph — Vite-bundled, not
- * esbuild-bundled with this file — so it can't just be imported here).
+ * Slugify arbitrary text into a URL/id-safe token (heading ids). Accents
+ * are transliterated ("Légendes" → "legendes", not "lgendes") and letters
+ * of any script are kept, so a heading written entirely in, say, Cyrillic
+ * doesn't end up with an empty id. Only the plugin needs it: links are
+ * resolved to their target's exact id at export time (see anchorId in
+ * noteRenderer.ts), so the site never slugifies anything itself.
  */
-export const BASE_PATH_SENTINEL = "%%BASE%%";
+export function slugify(text: string): string {
+	return stripDiacritics(text)
+		.toLowerCase()
+		.replace(/\s+/g, "-")
+		.replace(/[^\p{L}\p{N}_-]/gu, "");
+}
 
 /**
  * Where a vault file (image, …) is served on the site, relative to its
@@ -47,11 +102,6 @@ export function staticFileUrl(vaultRelativePath: string): string {
 			.map(encodeURIComponent)
 			.join("/")
 	);
-}
-
-/** Strip diacritics (é→e, è→e, ç→c, …) instead of turning them into "_". */
-function stripDiacritics(str: string): string {
-	return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
 /**
@@ -82,16 +132,9 @@ export function routeOf(vaultPath: string): string {
 	return "/" + sanitizeRoutePath(vaultPath);
 }
 
-/**
- * Slugify arbitrary text into a URL/id-safe token (heading ids, link
- * fragments). Accents are transliterated ("Légendes" → "legendes", not
- * "lgendes") and letters of any script are kept, so a heading written
- * entirely in, say, Cyrillic doesn't end up with an empty id. Must stay
- * identical to slugify() in svelte-lib/lib/wikiFetch.ts.
- */
-export function slugify(text: string): string {
-	return stripDiacritics(text)
-		.toLowerCase()
-		.replace(/\s+/g, "-")
-		.replace(/[^\p{L}\p{N}_-]/gu, "");
+/** The URL path of a note's page on the site, base-less: its route plus
+ * the trailing slash every page has there ("Règles/Été.md" → "/Regles/Ete/")
+ * — also the graph's node ids. */
+export function pageRouteOf(vaultPath: string): string {
+	return routeOf(vaultPath) + "/";
 }

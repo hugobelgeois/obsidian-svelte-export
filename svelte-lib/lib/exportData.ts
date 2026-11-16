@@ -4,7 +4,7 @@
 // build if the file doesn't exist yet (e.g. right after updating the
 // plugin's svelte-lib files but before the very first export has run) —
 // the glob form simply leaves it out, and the fallback below applies.
-import type { GraphForces } from "./graphPhysics";
+import type { GraphForces } from "./shared";
 
 const modules = import.meta.glob("./*.json", { eager: true }) as Record<
 	string,

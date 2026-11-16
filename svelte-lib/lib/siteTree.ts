@@ -21,20 +21,27 @@ function buildTree(): TreeNode[] {
 		.filter((p) => p !== "/");
 
 	const root: TreeNode[] = [];
+	/** Every node created so far, by path — instead of searching each
+	 * level's children for every path inserted. */
+	const byPath = new Map<string, TreeNode>();
 
+	// Sorted so a note ("/A") always comes before the notes in a folder of
+	// the same name ("/A/x") — the other way round, the folder node would
+	// be found for the note's own path below, and the note dropped.
 	for (const rawPath of paths.sort()) {
 		const parts = rawPath.split("/").filter(Boolean);
 		let currentLevel = root;
+		let builtPath = "";
 
 		parts.forEach((part, i) => {
 			const isLeaf = i === parts.length - 1;
-			const builtPath = "/" + parts.slice(0, i + 1).join("/");
+			builtPath += "/" + part;
 			// Match by canonical route path, NOT by display name: the display
 			// name comes from NAME_MAP and may differ from the raw URL segment
 			// (accents restored, e.g. "Règles" vs "Regles"). Matching on name
 			// meant every file after the first one in a folder failed to find
 			// the existing folder node and created a duplicate instead.
-			const existing = currentLevel.find((n) => n.path === builtPath);
+			const existing = byPath.get(builtPath);
 
 			if (existing) {
 				if (!isLeaf && !existing.children) existing.children = [];
@@ -53,6 +60,7 @@ function buildTree(): TreeNode[] {
 					children: isLeaf ? undefined : [],
 				};
 				currentLevel.push(node);
+				byPath.set(node.path, node);
 				currentLevel = node.children ?? [];
 			}
 		});

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from "$lib/Icon.svelte";
+	import { isMobileWidth } from "$lib/viewport";
 	import type { Snippet } from "svelte";
 
 	/**
@@ -47,7 +48,7 @@
 		}
 		if (!wasOpen) return;
 		wasOpen = false;
-		if (window.innerWidth > 768) return;
+		if (!isMobileWidth()) return;
 		closing = true;
 		const timer = setTimeout(() => (closing = false), CLOSE_ANIMATION_MS);
 		return () => clearTimeout(timer);

@@ -1,0 +1,334 @@
+import { TFile } from "obsidian";
+import * as path from "path";
+import { routeOf } from "./constants";
+import type { ExportContext } from "./exporter";
+import { assetStaticPath, dependencyKey, NoteDeps } from "./noteRenderer";
+import {
+	EXPORT_CACHE_FILE,
+	readJsonFile,
+	writeJsonFile,
+} from "./obsidianUtil";
+import { ExportResult, PAGE_FORMAT_VERSION, SiteInfo } from "./pageexporter";
+import {
+	activeIntegrations,
+	buildIntegrationCss,
+	integrationSignature,
+	PLUGIN_INTEGRATIONS,
+	PluginIntegration,
+} from "./pluginIntegrations";
+import { SyncedFolder } from "./syncedFolder";
+
+/**
+ * What an export remembers for the next one (state files in the destination
+ * folder, plus links.json) — what lets a note that didn't change, nor
+ * anything its page depends on, be skipped instead of rendered again.
+ * SiteExporter (exporter.ts) loads it, updates it as notes are rendered,
+ * and saves it.
+ */
+
+/** Vault path → mtime of the file when it was last exported. */
+type ExportCache = Record<string, number>;
+/** Note route → routes of the notes it links to. */
+type LinksMap = Record<string, string[]>;
+
+/** What .export-plugins.json records about one note's page. */
+interface PageState {
+	/** Integrations with a code block in the note (see RenderedNote). */
+	plugins: string[];
+	/** Local files the page references — static/ keeps only what each
+	 * export records, so they're recorded even for cache-skipped pages. */
+	assets: string[];
+	/** The pluginCss/ stylesheets the page imports — missing in state from
+	 * before it was recorded. */
+	css?: string[];
+	deps?: NoteDeps;
+	/** dependencyKey() of `deps` when the page was rendered. */
+	depsKey?: string;
+}
+
+/**
+ * .export-plugins.json — what the mtime cache alone can't tell: which
+ * pages contain plugin blocks (to re-export them when that plugin's
+ * settings change), which local files those blocks reference, what each
+ * page depends on, and the runtime CSS captured while rendering them.
+ */
+interface PluginExportState {
+	signatures: Record<string, string>;
+	pages: Record<string, PageState>;
+	runtimeCss: Record<string, Record<string, string>>;
+	/** The page format and site details the cached pages were generated
+	 * with — see loadExportState(). */
+	pageFormat?: string;
+}
+
+const SEARCH_STATE_FILE = ".export-search.json";
+const PLUGIN_STATE_FILE = ".export-plugins.json";
+
+/** Everything the export loop reads and updates. */
+export interface ExportState {
+	linksMap: LinksMap;
+	cache: ExportCache;
+	pluginState: PluginExportState;
+	/** Plugin integrations whose blocks get rendered this time. */
+	active: PluginIntegration[];
+	/** Vault paths of every note in this export. */
+	exportedNotes: Set<string>;
+	/** Vault path → the note's text, for the site's search index. */
+	searchText: Record<string, string>;
+	site: SiteInfo;
+}
+
+const linksJsonPath = (ctx: ExportContext) =>
+	path.join(ctx.libDir, "links.json");
+
+/**
+ * Reads what previous exports recorded (link graph, mtime cache, plugin
+ * block data, search text), drops entries for files no longer exported,
+ * and works out which cached pages must be regenerated anyway.
+ */
+export function loadExportState(
+	ctx: ExportContext,
+	files: TFile[],
+	exportedNotes: Set<string>,
+	expectedRoutes: Set<string>,
+	site: SiteInfo,
+): ExportState {
+	const { app, settings, vaultPath, destinationPath } = ctx;
+	const currentFilePaths = new Set(files.map((f) => f.path));
+	const keepCurrent = <T>(record: Record<string, T>, keep: Set<string>) =>
+		Object.fromEntries(
+			Object.entries(record).filter(([key]) => keep.has(key)),
+		);
+
+	// ── Link graph (real wikilinks, for the Graph view) ─────────────────
+	// Loaded first so unchanged (cache-skipped) files keep their
+	// previously-recorded links instead of losing them. Entries for notes
+	// no longer exported are dropped, or they'd linger in the Graph view
+	// forever. Written right away so the file exists on disk immediately
+	// — even on a brand new destination, and even if the export loop
+	// hits an error.
+	const linksMap = keepCurrent(
+		readJsonFile<LinksMap>(linksJsonPath(ctx), {}),
+		expectedRoutes,
+	);
+	writeJsonFile(linksJsonPath(ctx), linksMap);
+
+	// ── Export cache ───────────────────────────────────────────────────
+	// Entries for files no longer exported are dropped, so a re-added
+	// file at the same vault path re-exports fresh rather than being
+	// cache-skipped against a stale mtime.
+	const cache = keepCurrent(
+		readJsonFile<ExportCache>(
+			path.join(destinationPath, EXPORT_CACHE_FILE),
+			{},
+		),
+		currentFilePaths,
+	);
+
+	// ── Plugin integrations ──────────────────────────────────────────
+	const pluginState: PluginExportState = {
+		signatures: {},
+		pages: {},
+		runtimeCss: {},
+		...readJsonFile<Partial<PluginExportState>>(
+			path.join(destinationPath, PLUGIN_STATE_FILE),
+			{},
+		),
+	};
+	pluginState.pages = keepCurrent(pluginState.pages, currentFilePaths);
+	// Pages generated by an older version of the exporter (which may not
+	// work with the current svelte-lib/ files), or with other site-wide
+	// details baked in, are all regenerated.
+	const pageFormat = JSON.stringify([PAGE_FORMAT_VERSION, site]);
+	if (pluginState.pageFormat !== pageFormat) {
+		for (const p of Object.keys(cache)) delete cache[p];
+		pluginState.pageFormat = pageFormat;
+	}
+	const searchText = keepCurrent(
+		readJsonFile<Record<string, string>>(
+			path.join(destinationPath, SEARCH_STATE_FILE),
+			{},
+		),
+		currentFilePaths,
+	);
+	const active = activeIntegrations(app, settings.disabledIntegrations);
+	for (const integration of PLUGIN_INTEGRATIONS) {
+		const id = integration.pluginId;
+		const signature = integrationSignature(
+			app,
+			vaultPath,
+			integration,
+			active.includes(integration),
+		);
+		if (pluginState.signatures[id] === signature) continue;
+		// Turned on/off, updated or reconfigured: every page with one
+		// of its blocks must be rendered again, and CSS captured from
+		// the previous configuration is stale.
+		for (const [filePath, page] of Object.entries(pluginState.pages)) {
+			if (page.plugins.includes(id)) delete cache[filePath];
+		}
+		delete pluginState.runtimeCss[id];
+		pluginState.signatures[id] = signature;
+	}
+
+	// A page also goes stale when something it depends on changes —
+	// a linked note renamed, removed or (de)selected for export, an
+	// embedded note edited, an unresolved link that now resolves.
+	for (const [filePath, page] of Object.entries(pluginState.pages)) {
+		if (
+			!page.deps ||
+			dependencyKey(app, filePath, page.deps, exportedNotes) !==
+				page.depsKey
+		) {
+			delete cache[filePath];
+		}
+	}
+
+	return {
+		linksMap,
+		cache,
+		pluginState,
+		active,
+		exportedNotes,
+		searchText,
+		site,
+	};
+}
+
+/**
+ * Whether the page a previous export generated for `note` is still valid:
+ * the note is unchanged since (and so is everything its page depends on —
+ * see loadExportState), and its links, page data and text were recorded
+ * then, or they'd stay missing.
+ */
+export function isUpToDate(state: ExportState, note: TFile): boolean {
+	const cachedMtime = state.cache[note.path];
+	return (
+		cachedMtime !== undefined &&
+		cachedMtime >= note.stat.mtime &&
+		routeOf(note.path) in state.linksMap &&
+		note.path in state.pluginState.pages &&
+		note.path in state.searchText
+	);
+}
+
+/** Records what rendering `note` produced. */
+export function recordPage(
+	ctx: ExportContext,
+	state: ExportState,
+	note: TFile,
+	{ linkedRoutes, text, plugins, assets, css, deps }: ExportResult,
+): void {
+	state.linksMap[routeOf(note.path)] = linkedRoutes;
+	state.searchText[note.path] = text;
+	state.pluginState.pages[note.path] = {
+		plugins,
+		assets,
+		css,
+		deps,
+		depsKey: dependencyKey(ctx.app, note.path, deps, state.exportedNotes),
+	};
+}
+
+/** Records that `file` (note or image) was exported as of `mtime` — read
+ * before exporting it: if it's edited meanwhile, the next export must
+ * still see it as changed. */
+export function recordExported(
+	state: ExportState,
+	file: TFile,
+	mtime: number,
+): void {
+	state.cache[file.path] = mtime;
+}
+
+/** Merges the runtime CSS captured while rendering (NoteRenderer's
+ * runtimeCss) into what earlier exports captured. */
+export function recordRuntimeCss(
+	state: ExportState,
+	runtimeCss: Map<string, Map<string, string>>,
+): void {
+	const saved = state.pluginState.runtimeCss;
+	for (const [id, chunks] of runtimeCss) {
+		saved[id] = { ...saved[id], ...Object.fromEntries(chunks) };
+	}
+}
+
+/** Writes everything the export loop produced besides the pages
+ * themselves, and records state for the next export. */
+export function saveExportState(
+	ctx: ExportContext,
+	staticFiles: SyncedFolder,
+	state: ExportState,
+): void {
+	const { destinationPath } = ctx;
+	const { linksMap, cache, pluginState, active, searchText } = state;
+	writePluginCss(ctx, active, pluginState);
+	writeJsonFile(path.join(destinationPath, SEARCH_STATE_FILE), searchText);
+	copyNoteAssets(ctx, staticFiles, pluginState);
+	writeJsonFile(path.join(destinationPath, PLUGIN_STATE_FILE), pluginState);
+	writeJsonFile(path.join(destinationPath, EXPORT_CACHE_FILE), cache);
+	writeJsonFile(linksJsonPath(ctx), linksMap);
+}
+
+/**
+ * Writes src/lib/pluginCss/<pluginId>.css for every active integration
+ * (plus runtime CSS like MathJax's) — imported by the pages that need it
+ * (see noteToSvelte in pageexporter.ts). Synced, so a disabled
+ * integration's stylesheet doesn't linger (its pages were re-exported
+ * without the import, since disabling it changed its signature) and an
+ * unchanged one isn't rewritten.
+ */
+function writePluginCss(
+	ctx: ExportContext,
+	active: PluginIntegration[],
+	pluginState: PluginExportState,
+) {
+	const { app, vaultPath, libDir } = ctx;
+	const cssDir = new SyncedFolder(path.join(libDir, "pluginCss"));
+	// Runtime CSS not tied to a plugin integration (e.g. MathJax's) —
+	// dropped once no page imports it anymore. Unknown while some page's
+	// state predates `css` being recorded: kept until then.
+	const pages = Object.values(pluginState.pages);
+	const imported = pages.every((p) => p.css)
+		? new Set(pages.flatMap((p) => p.css ?? []))
+		: null;
+	const integrationIds = new Set(PLUGIN_INTEGRATIONS.map((i) => i.pluginId));
+	for (const [id, chunks] of Object.entries(pluginState.runtimeCss)) {
+		if (integrationIds.has(id)) continue;
+		if (imported && !imported.has(id)) {
+			delete pluginState.runtimeCss[id];
+			continue;
+		}
+		cssDir.write(`${id}.css`, Object.values(chunks).join("\n\n"));
+	}
+	for (const integration of active) {
+		const css = buildIntegrationCss(
+			app,
+			vaultPath,
+			integration,
+			Object.values(pluginState.runtimeCss[integration.pluginId] ?? {}),
+		);
+		cssDir.write(`${integration.pluginId}.css`, css);
+	}
+	cssDir.prune();
+}
+
+/** Local files referenced by rendered notes (embedded images, plugin
+ * output…), copied into static/ where their rewritten URLs point (see
+ * assetStaticPath in noteRenderer.ts). */
+function copyNoteAssets(
+	ctx: ExportContext,
+	staticFiles: SyncedFolder,
+	pluginState: PluginExportState,
+) {
+	const assets = new Set(
+		Object.values(pluginState.pages).flatMap((p) => p.assets),
+	);
+	for (const asset of assets) {
+		try {
+			staticFiles.copy(asset, assetStaticPath(asset, ctx.vaultPath));
+		} catch (e) {
+			console.warn(`[SvelteExporter] Could not copy ${asset}:`, e);
+		}
+	}
+}

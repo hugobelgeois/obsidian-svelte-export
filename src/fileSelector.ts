@@ -1,13 +1,8 @@
 import { App, setIcon, TAbstractFile, TFile, TFolder } from "obsidian";
-import { IMAGE_EXTENSIONS } from "./constants";
+import { isExportable, isWithin } from "./constants";
 import type SvelteExporterPlugin from "./main";
 
 type PathList = "selectedPaths" | "hiddenPaths";
-
-/** Whether the export handles `file` at all (see resolveFiles in main.ts). */
-function isExportable(file: TFile): boolean {
-	return file.extension === "md" || IMAGE_EXTENSIONS.has(file.extension);
-}
 
 /**
  * The settings tab's Export/Visible tree of every vault file and folder.
@@ -334,9 +329,9 @@ export class FileSelector {
 	 * impossible to fully uncheck).
 	 */
 	private removeByPrefix(list: PathList, p: string) {
-		const prefix = p === "/" ? "" : p + "/";
+		// The vault root ("/") has everything under it.
 		this.plugin.settings[list] = this.plugin.settings[list].filter(
-			(s) => s !== p && !s.startsWith(prefix),
+			(s) => p !== "/" && !isWithin(s, p),
 		);
 	}
 

@@ -1,6 +1,6 @@
-import * as fs from "fs";
 import * as path from "path";
 import type { ActiveCss } from "./obsidianCss";
+import { readJsonFile } from "./obsidianUtil";
 
 // ── Style Settings support ──────────────────────────────────────────────────
 //
@@ -114,25 +114,12 @@ export function computeStyleSettingsClasses(
 	obsidianDir: string,
 	activeCss: ActiveCss,
 ): string[] {
-	const dataPath = path.join(
-		obsidianDir,
-		"plugins",
-		"obsidian-style-settings",
-		"data.json",
+	const savedValues = readJsonFile<Record<string, unknown> | null>(
+		path.join(obsidianDir, "plugins", "obsidian-style-settings", "data.json"),
+		null,
+		"Style Settings' data.json",
 	);
-	if (!fs.existsSync(dataPath)) return [];
-
-	let savedValues: Record<string, unknown>;
-	try {
-		savedValues = JSON.parse(
-			fs.readFileSync(dataPath, "utf-8"),
-		) as Record<string, unknown>;
-	} catch {
-		console.warn(
-			"[SvelteExporter] Could not parse Style Settings' data.json",
-		);
-		return [];
-	}
+	if (!savedValues) return [];
 
 	const classes = new Set<string>();
 	for (const { css } of activeCss.sheets) {

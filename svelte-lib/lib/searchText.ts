@@ -20,14 +20,27 @@ export function fold(original: string): FoldedText {
 	let folded = "";
 	const sourceIndex: number[] = [];
 	for (let i = 0; i < original.length; i++) {
-		const f = original[i]!
-			.normalize("NFD")
-			.replace(/[̀-ͯ]/g, "")
-			.toLowerCase();
+		const c = original.charCodeAt(i);
+		// ASCII (most of any text): lowercasing is all there is to do, one
+		// character for one — no need for normalize() and a regex.
+		const f =
+			c < 128
+				? c >= 65 && c <= 90
+					? String.fromCharCode(c + 32)
+					: original[i]!
+				: original[i]!
+						.normalize("NFD")
+						.replace(/[̀-ͯ]/g, "")
+						.toLowerCase();
 		folded += f;
 		for (let k = 0; k < f.length; k++) sourceIndex.push(i);
 	}
 	return { original, folded, sourceIndex };
+}
+
+/** fold(text).folded, without building its sourceIndex. */
+function foldText(text: string): string {
+	return /^[\x00-\x7f]*$/.test(text) ? text.toLowerCase() : fold(text).folded;
 }
 
 export interface SearchHit {
@@ -37,17 +50,19 @@ export interface SearchHit {
 	snippet: [string, string, string];
 }
 
+/** An entry with its title and text already folded — the original's
+ * sourceIndex is only worked out for the few hits actually shown. */
 export interface PreparedEntry {
 	entry: SearchEntry;
-	title: FoldedText;
-	text: FoldedText;
+	title: string;
+	text: string;
 }
 
 export function prepare(entries: SearchEntry[]): PreparedEntry[] {
 	return entries.map((entry) => ({
 		entry,
-		title: fold(entry.title),
-		text: fold(entry.text),
+		title: foldText(entry.title),
+		text: foldText(entry.text),
 	}));
 }
 
@@ -61,34 +76,61 @@ export function search(
 	limit = 30,
 	context = 40,
 ): SearchHit[] {
-	const words = fold(query).folded.split(/\s+/).filter(Boolean);
+	const words = foldText(query).split(/\s+/).filter(Boolean);
 	if (!words.length) return [];
 
-	const hits: { hit: SearchHit; score: number }[] = [];
+	const matches: {
+		entry: SearchEntry;
+		score: number;
+		/** Where the first word found in the text is (-1: none is). */
+		at: number;
+		length: number;
+	}[] = [];
 	for (const { entry, title, text } of notes) {
-		const found = words.every(
-			(w) => title.folded.includes(w) || text.folded.includes(w),
-		);
+		let found = true;
+		let inTitle = true;
+		let occurrences = 0;
+		let at = -1;
+		let length = 0;
+		// One indexOf scan per word gives whether it's there, where it
+		// first is, and how often it occurs.
+		for (const w of words) {
+			const inThisTitle = title.includes(w);
+			if (!inThisTitle) inTitle = false;
+			const first = text.indexOf(w);
+			if (first === -1) {
+				if (inThisTitle) continue;
+				found = false;
+				break;
+			}
+			if (at === -1) {
+				at = first;
+				length = w.length;
+			}
+			for (let i = first; i !== -1; i = text.indexOf(w, i + w.length)) {
+				occurrences++;
+			}
+		}
 		if (!found) continue;
-		const inTitle = words.every((w) => title.folded.includes(w));
-		// Excerpt around the first word found in the text, if any.
-		const word = words.find((w) => text.folded.includes(w));
-		const snippet: SearchHit["snippet"] = word
-			? around(text, text.folded.indexOf(word), word.length, context)
-			: [excerptStart(text.original, context * 2), "", ""];
-		const occurrences = words.reduce(
-			(n, w) => n + text.folded.split(w).length - 1,
-			0,
-		);
-		hits.push({
-			hit: { route: entry.route, title: entry.title, snippet },
+		matches.push({
+			entry,
 			score: (inTitle ? 1_000_000 : 0) + occurrences,
+			at,
+			length,
 		});
 	}
-	return hits
+	// Snippets only for the hits that are shown.
+	return matches
 		.sort((a, b) => b.score - a.score)
 		.slice(0, limit)
-		.map((h) => h.hit);
+		.map(({ entry, at, length }) => ({
+			route: entry.route,
+			title: entry.title,
+			snippet:
+				at === -1
+					? [excerptStart(entry.text, context * 2), "", ""]
+					: around(fold(entry.text), at, length, context),
+		}));
 }
 
 function excerptStart(text: string, length: number): string {

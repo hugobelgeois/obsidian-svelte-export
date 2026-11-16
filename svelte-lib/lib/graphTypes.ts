@@ -23,3 +23,19 @@ export interface GNode {
 	 * eased over time instead of snapping. */
 	dimAlpha: number;
 }
+
+/** Bounding box of every node's current position — infinite (min > max)
+ * when there are no nodes. */
+export function nodeBounds(nodes: GNode[]) {
+	let minX = Infinity,
+		minY = Infinity,
+		maxX = -Infinity,
+		maxY = -Infinity;
+	for (const n of nodes) {
+		if (n.x < minX) minX = n.x;
+		if (n.x > maxX) maxX = n.x;
+		if (n.y < minY) minY = n.y;
+		if (n.y > maxY) maxY = n.y;
+	}
+	return { minX, minY, maxX, maxY };
+}

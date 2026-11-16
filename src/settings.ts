@@ -36,7 +36,7 @@ export interface SvelteExporterSettings {
 	// Which periodic animation plays in the graph view's big view: "none",
 	// or an id matching a filename (without extension) under
 	// svelte-lib/lib/animations/ — see the dynamic enumeration in
-	// display() below and svelte-lib/lib/animationRegistry.ts. The interval
+	// readAnimationOptions() below and svelte-lib/lib/animationRegistry.ts. The interval
 	// between cycles is fixed in the exported code, not configurable.
 	graphAnimationType: string;
 	// Which color mode the exported site starts in on first load. The
@@ -92,6 +92,11 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 	// Paths recorded in .export-cache.json — read by renderCache(), shown
 	// with a "✓" in the file selector.
 	private cachedPaths = new Set<string>();
+	// Installed themes and graph animations (value → label) — read from
+	// disk once each time the tab is opened, not again on every redraw()
+	// (adding/removing a custom script, clearing the cache…).
+	private themes: string[] | null = null;
+	private animationOptions: Record<string, string> | null = null;
 
 	constructor(app: App, plugin: SvelteExporterPlugin) {
 		super(app, plugin);
@@ -99,7 +104,15 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		this.fileSelector = new FileSelector(app, plugin);
 	}
 
+	/** Called by Obsidian when the tab is opened. */
 	display(): void {
+		this.themes = null;
+		this.animationOptions = null;
+		this.redraw();
+	}
+
+	/** Rebuilds the tab after a change made from it. */
+	private redraw(): void {
 		const { containerEl } = this;
 		containerEl.empty();
 
@@ -205,28 +218,11 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 		// ── Theme ───────────────────────────────────────────────────────────
 		new Setting(containerEl).setName("Appearance").setHeading();
 
-		// Enumerate available themes from the vault's configured themes/ folder
-		const vaultPath = getVaultBasePath(this.app);
-		const themesDir = path.join(
-			vaultPath,
-			this.app.vault.configDir,
-			"themes",
-		);
-		const availableThemes: string[] = [];
-		if (fs.existsSync(themesDir)) {
-			for (const entry of fs.readdirSync(themesDir, {
-				withFileTypes: true,
-			})) {
-				if (entry.isDirectory()) availableThemes.push(entry.name);
-			}
-			availableThemes.sort();
-		}
-
 		// Dropdown options: default (no theme) + installed themes
 		const themeOptions: Record<string, string> = {
 			__none__: "Default",
 		};
-		for (const t of availableThemes) themeOptions[t] = t;
+		for (const t of (this.themes ??= this.readThemes())) themeOptions[t] = t;
 
 		new Setting(containerEl)
 			.setName("Site theme")
@@ -394,38 +390,8 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 
 	/** Graph view animation and group colors. */
 	private renderGraph(containerEl: HTMLElement) {
-		// Enumerate available graph animations from svelte-lib/lib/animations/
-		// — each file there is one selectable animation (see
-		// svelte-lib/lib/animationRegistry.ts, which loads the same folder
-		// at build time). Adding or removing a file changes what's offered
-		// here with no other wiring needed.
-		const animationsDir = path.join(
-			this.plugin.getPluginDir(),
-			"svelte-lib",
-			"lib",
-			"animations",
-		);
-		const animationOptions: Record<string, string> = {
-			none: "None",
-			random: "Random (a different one each page load)",
-		};
-		if (fs.existsSync(animationsDir)) {
-			const files = fs
-				.readdirSync(animationsDir)
-				.filter((f) => f.endsWith(".ts") && f !== "types.ts")
-				.sort();
-			for (const file of files) {
-				const id = file.replace(/\.ts$/, "");
-				const content = fs.readFileSync(
-					path.join(animationsDir, file),
-					"utf-8",
-				);
-				const match = content.match(
-					/export const label\s*=\s*["'`](.*?)["'`]/,
-				);
-				animationOptions[id] = match?.[1] ?? id;
-			}
-		}
+		const animationOptions = (this.animationOptions ??=
+			this.readAnimationOptions());
 
 		new Setting(containerEl)
 			.setName("Graph animation")
@@ -500,7 +466,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 									(p) => p !== scriptPath,
 								);
 							await this.plugin.saveSettings();
-							this.display();
+							this.redraw();
 						});
 				});
 		}
@@ -523,7 +489,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 							scripts.push(relative);
 							await this.plugin.saveSettings();
 						}
-						this.display();
+						this.redraw();
 					});
 			});
 	}
@@ -554,7 +520,7 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 						new Notice(
 							"🗑️ export cache cleared. All files will be re-exported on the next run.",
 						);
-						this.display();
+						this.redraw();
 					});
 			});
 	}
@@ -571,6 +537,53 @@ export class SvelteExporterSettingTab extends PluginSettingTab {
 	}
 
 	// ── Helpers ───────────────────────────────────────────────────────────
+
+	/** Themes installed in the vault's themes/ folder, sorted. */
+	private readThemes(): string[] {
+		const themesDir = path.join(
+			getVaultBasePath(this.app),
+			this.app.vault.configDir,
+			"themes",
+		);
+		if (!fs.existsSync(themesDir)) return [];
+		return fs
+			.readdirSync(themesDir, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => entry.name)
+			.sort();
+	}
+
+	/**
+	 * The "Graph animation" choices: none, random, and every animation in
+	 * svelte-lib/lib/animations/ — each file there is one (see
+	 * svelte-lib/lib/animationRegistry.ts, which loads the same folder at
+	 * build time), labelled by its `export const label`. Adding or removing
+	 * a file changes what's offered here with no other wiring needed.
+	 */
+	private readAnimationOptions(): Record<string, string> {
+		const animationsDir = path.join(
+			this.plugin.getPluginDir(),
+			"svelte-lib",
+			"lib",
+			"animations",
+		);
+		const options: Record<string, string> = {
+			none: "None",
+			random: "Random (a different one each page load)",
+		};
+		if (!fs.existsSync(animationsDir)) return options;
+		const files = fs
+			.readdirSync(animationsDir)
+			.filter((f) => f.endsWith(".ts") && f !== "types.ts")
+			.sort();
+		for (const file of files) {
+			const content = fs.readFileSync(path.join(animationsDir, file), "utf-8");
+			const id = file.replace(/\.ts$/, "");
+			options[id] =
+				content.match(/export const label\s*=\s*["'`](.*?)["'`]/)?.[1] ?? id;
+		}
+		return options;
+	}
 
 	/** A text field saved (trimmed) to `key` on every change. */
 	private addTextSetting(

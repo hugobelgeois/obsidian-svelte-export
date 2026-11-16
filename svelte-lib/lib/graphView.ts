@@ -4,7 +4,7 @@
  * hit-testing and zooming. Pure functions over a View — the component owns
  * the views and decides when to call these.
  */
-import type { GNode } from "$lib/graphTypes";
+import { nodeBounds, type GNode } from "$lib/graphTypes";
 
 /** Independent pan/zoom/hover state for one canvas (sidebar vs. modal). */
 export interface View {
@@ -46,23 +46,13 @@ export function createView(): View {
 	};
 }
 
-/** Actual bounding box of every node's current position. */
+/** Actual bounding box of every node's current position (a default one
+ * when there are none). */
 function computeBounds(nodes: GNode[]) {
-	let minX = Infinity,
-		minY = Infinity,
-		maxX = -Infinity,
-		maxY = -Infinity;
-	for (const n of nodes) {
-		if (n.x < minX) minX = n.x;
-		if (n.x > maxX) maxX = n.x;
-		if (n.y < minY) minY = n.y;
-		if (n.y > maxY) maxY = n.y;
-	}
-	if (!isFinite(minX)) {
-		minX = minY = -50;
-		maxX = maxY = 50;
-	}
-	return { minX, minY, maxX, maxY };
+	const bounds = nodeBounds(nodes);
+	return isFinite(bounds.minX)
+		? bounds
+		: { minX: -50, minY: -50, maxX: 50, maxY: 50 };
 }
 
 /**
@@ -123,11 +113,12 @@ export function nodeAt(
 ): GNode | null {
 	const hitR = 10 / view.scale;
 	let best: GNode | null = null;
-	let bestDist = hitR;
+	// Squared distances — same order, no square root per node.
+	let bestDist = hitR * hitR;
 	for (const n of nodes) {
 		const dx = n.x - wx;
 		const dy = n.y - wy;
-		const d = Math.sqrt(dx * dx + dy * dy);
+		const d = dx * dx + dy * dy;
 		if (d < bestDist) {
 			best = n;
 			bestDist = d;

@@ -1,6 +1,7 @@
 src — the Obsidian plugin (bundled into main.js)
 -- main.ts — plugin entry: commands, settings, file rename/create bookkeeping
--- exporter.ts — one export run (SiteExporter): state/cache, note rendering loop, plugin CSS
+-- exporter.ts — one export run (SiteExporter): orchestrates the steps, note rendering loop
+-- exportState.ts — what an export remembers for the next (cache, links, plugin/page state), plugin CSS, note assets
 -- siteFiles.ts — site data JSON, root page, app.html, custom scripts, search index, sitemap
 -- settings.ts — settings tab
 -- fileSelector.ts — the settings tab's Export/Visible file tree
@@ -37,8 +38,9 @@ svelte-lib — copied into the exported project's src/ on every export
 ---- Graph.svelte — graph view (sidebar preview, popup, full page)
 ---- graphDraw.ts — draws a frame of the graph (edges, nodes, labels, animation effects)
 ---- graphView.ts — pan/zoom geometry of a graph canvas (fit, zoom, hit-testing)
+---- graphReveal.ts — progressive reveal of the standalone graph page
 ---- graphPhysics.ts — Obsidian's graph simulation (d3-force port)
----- graphTypes.ts — graph node type
+---- graphTypes.ts — graph node type and its bounding box
 ---- animationRegistry.ts — graph animations found in animations/
 ---- animations/ — one file per graph animation (+ types.ts)
 ---- easing.ts — easing helpers for the animations
@@ -49,5 +51,8 @@ svelte-lib — copied into the exported project's src/ on every export
 ---- routePath.ts — base-path-free route of the current page
 ---- basePath.ts — swaps the base-path placeholder in exported HTML
 ---- exportData.ts — data files written by the plugin at export time
----- Icon.svelte, ThemeIcon.svelte — icons
+---- shared.ts — constants/helpers shared with the plugin (imported by src/ too)
+---- viewport.ts — mobile breakpoint check
+---- ThemeToggle.svelte — light/dark mode button
+---- Icon.svelte, ThemeIcon.svelte, CloseIcon.svelte — icons
 tests — vitest tests (npm test); obsidianStub.ts stands in for the obsidian module

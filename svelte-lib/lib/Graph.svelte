@@ -12,11 +12,11 @@
 	import {
 		DIM_TAU_MS,
 		drawGraph,
-		REVEAL_FADE_MS,
 		withNeighbors,
 		type GraphColors,
 	} from "$lib/graphDraw";
 	import { DRAG_ALPHA, ForceSimulation, seedPositions } from "$lib/graphPhysics";
+	import { ProgressiveReveal } from "$lib/graphReveal";
 	import type { GNode } from "$lib/graphTypes";
 	import {
 		centerOn,
@@ -29,6 +29,7 @@
 	} from "$lib/graphView";
 	import { getLinkEdges } from "$lib/linkGraph";
 	import { toRoutePath } from "$lib/routePath";
+	import CloseIcon from "$lib/CloseIcon.svelte";
 	import Icon from "$lib/Icon.svelte";
 	import { flattenTree, siteTree } from "$lib/siteTree";
 	import { onDestroy, onMount, untrack } from "svelte";
@@ -77,7 +78,7 @@
 		fy: null,
 		degree: 0,
 		// Standalone starts every node hidden and reveals them progressively
-		// (see revealOrder below); every other mode shows everything at once.
+		// (see `reveal` below); every other mode shows everything at once.
 		revealed: !standalone,
 		revealedAt: null,
 		dimAlpha: 1,
@@ -107,49 +108,10 @@
 		target: nodeIndex.get(l.target)!,
 	}));
 
-	// ── Progressive reveal (standalone page only) ───────────────────────────
-	// Order: the most-connected node first, then its neighbors (breadth-
-	// first, each frontier visited most-connected-first), so the reveal
-	// grows outward from each "hub" the same way the eye would explore the
-	// graph. Once a whole connected component is exhausted, jump to the
-	// next most-connected node not yet reached (covers disconnected notes).
-	function computeRevealOrder(): string[] {
-		const byDegreeDesc = [...nodes].sort((a, b) => b.degree - a.degree);
-		const visited = new Set<string>();
-		const order: string[] = [];
-
-		for (const start of byDegreeDesc) {
-			if (visited.has(start.id)) continue;
-			const queue: string[] = [start.id];
-			visited.add(start.id);
-			while (queue.length) {
-				const id = queue.shift()!;
-				order.push(id);
-				const neighbors = (adjacency.get(id) ?? [])
-					.filter((nid) => !visited.has(nid))
-					.sort(
-						(a, b) =>
-							(nodeIndex.get(b)?.degree ?? 0) -
-							(nodeIndex.get(a)?.degree ?? 0),
-					);
-				for (const nid of neighbors) {
-					visited.add(nid);
-					queue.push(nid);
-				}
-			}
-		}
-		return order;
-	}
-
-	const revealOrder: string[] = standalone ? computeRevealOrder() : [];
-	// Stagger tuned so a small vault reveals briskly and a huge one doesn't
-	// take forever — capped total runtime, floored per-node step.
-	const REVEAL_STEP_MS = Math.max(
-		25,
-		Math.min(70, 4000 / Math.max(revealOrder.length, 1)),
-	);
-	let revealCursor = 0;
-	let nextRevealAt = 0;
+	// ── Progressive reveal (standalone page only) — see lib/graphReveal.ts ──
+	const reveal = standalone
+		? new ProgressiveReveal(nodes, adjacency, nodeIndex)
+		: null;
 
 	/** Previous frame's time, for the hover dimming's easing. */
 	let lastDimFrameTime = 0;
@@ -254,19 +216,6 @@
 
 	// ── Animation loop ───────────────────────────────────────────────────────
 
-	/** Reveals the next node in `revealOrder`, if it's due. Standalone only. */
-	function advanceReveal(now: number) {
-		if (!standalone || revealCursor >= revealOrder.length) return;
-		if (nextRevealAt === 0) nextRevealAt = now; // reveal the first node immediately
-		if (now < nextRevealAt) return;
-		const n = nodeIndex.get(revealOrder[revealCursor++]);
-		if (n) {
-			n.revealed = true;
-			n.revealedAt = now;
-		}
-		nextRevealAt = now + REVEAL_STEP_MS;
-	}
-
 	let nextAnimationAt = 0; // 0 = not yet scheduled
 
 	/** Schedules/fires the selected periodic animation (see activeAnimation
@@ -278,8 +227,7 @@
 		}
 		// Standalone waits for the reveal to finish first; the popup modal
 		// has no reveal phase, so it's ready as soon as it's open.
-		const ready = standalone ? revealCursor >= revealOrder.length : true;
-		if (!ready) return;
+		if (reveal && !reveal.done) return;
 
 		// An animation can define its own cadence (e.g. flicker runs more
 		// often than the shared default) — fall back to the shared interval
@@ -335,31 +283,19 @@
 			sim.tick();
 
 			const stillMoving = sim.alpha > 0.02;
-			advanceReveal(now);
+			reveal?.advance(now);
 
-			if (standalone) {
-				// Full-page mode: only the big view exists, always active.
-				if (stillMoving && !modalView.dragNode) fitView(modalView, nodes);
-				advanceAnimation(now, true);
-				draw(modalView, true, now);
-			} else {
-				// Keep the default (non-user-adjusted) view fitted to every
-				// node while the layout is still moving into place (3) —
-				// but never while that view's own drag is in progress, or
-				// dragging a node out of frame would resize/pan the window (2).
-				if (!expanded && stillMoving && !sidebarView.dragNode) {
-					fitView(sidebarView, nodes);
-				}
-				if (expanded && stillMoving && !modalView.dragNode) {
-					fitView(modalView, nodes);
-				}
-				advanceAnimation(now, expanded);
-				// The small preview is disabled while the big view is open —
-				// no point drawing/hit-testing a view the user can't
-				// interact with anyway (it sits behind the modal backdrop).
-				if (!expanded) draw(sidebarView, false, now);
-				else draw(modalView, true, now);
-			}
+			// Only one view is drawn: the big one (always, in standalone
+			// mode) or the small preview — which is disabled while the big
+			// view is open, sitting behind the modal backdrop.
+			const view = bigViewActive ? modalView : sidebarView;
+			// Keep the default (non-user-adjusted) view fitted to every
+			// node while the layout is still moving into place (3) — but
+			// never while that view's own drag is in progress, or dragging
+			// a node out of frame would resize/pan the window (2).
+			if (stillMoving && !view.dragNode) fitView(view, nodes);
+			advanceAnimation(now, bigViewActive);
+			draw(view, bigViewActive, now);
 		} catch (err) {
 			// Never let one bad frame permanently kill the whole graph —
 			// log it so it's visible in the browser console, but keep
@@ -367,10 +303,7 @@
 			console.error("[Graph view] render error:", err);
 		}
 
-		const revealing =
-			standalone &&
-			(revealCursor < revealOrder.length ||
-				now < nextRevealAt + REVEAL_FADE_MS);
+		const revealing = !!reveal && reveal.isAnimating(now);
 		// A periodic animation is time-driven (it moves/glows nodes between
 		// triggers), so the big view keeps drawing every frame while one is
 		// selected — exactly as before this loop learned to sleep.
@@ -680,14 +613,7 @@
 							aria-label="Close graph view"
 							onclick={closeModal}
 						>
-							<Icon>
-								<line x1="18" y1="6" x2="6" y2="18" /><line
-									x1="6"
-									y1="6"
-									x2="18"
-									y2="18"
-								/>
-							</Icon>
+							<CloseIcon />
 						</button>
 					</div>
 				</div>

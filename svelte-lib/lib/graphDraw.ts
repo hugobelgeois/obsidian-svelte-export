@@ -72,16 +72,17 @@ function revealEase(n: GNode, now: number): number {
  * provide getSizeScale instead, which takes priority here. */
 const INTENSITY_MAX_SCALE = 1.7;
 
+/** `intensity`: the animation's getIntensity() for this node and frame. */
 function animationScale(
 	animation: GraphAnimation | undefined,
 	n: GNode,
 	now: number,
+	intensity: number,
 ): number {
 	if (animation?.getSizeScale) {
 		return Math.max(0.05, animation.getSizeScale(n, now));
 	}
-	const t = animation?.getIntensity?.(n, now) ?? 0;
-	return 1 + (INTENSITY_MAX_SCALE - 1) * t;
+	return 1 + (INTENSITY_MAX_SCALE - 1) * intensity;
 }
 
 // ── Hover dimming (eased, not instant) ──────────────────────────────────────
@@ -94,6 +95,9 @@ export const DIM_TAU_MS = 250;
 function updateDimAlpha(n: GNode, target: number, dt: number) {
 	const k = 1 - Math.exp(-dt / DIM_TAU_MS);
 	n.dimAlpha += (target - n.dimAlpha) * k;
+	// Snapped once indistinguishable, so settled nodes share one opacity
+	// (and one batched fill — see drawGraph).
+	if (Math.abs(target - n.dimAlpha) < 0.002) n.dimAlpha = target;
 }
 
 // ── Frame ────────────────────────────────────────────────────────────────────
@@ -102,6 +106,65 @@ function updateDimAlpha(n: GNode, target: number, dt: number) {
 const p = { x: 0, y: 0 };
 const sp = { x: 0, y: 0 };
 const tp = { x: 0, y: 0 };
+/** Labels queued while drawing the nodes, drawn after all of them —
+ * reused every frame (only the first `labelCount` entries are current). */
+const labelTexts: string[] = [];
+const labelXs: number[] = [];
+const labelYs: number[] = [];
+const labelAlphas: number[] = [];
+
+/** Memoizes `compute` on its last arguments (compared with ===) — for
+ * what a frame derives from state that only changes on hover or
+ * navigation, rather than recomputing it every frame. */
+function memoizeLast<A extends unknown[], R>(
+	compute: (...args: A) => R,
+): (...args: A) => R {
+	let lastArgs: A | null = null;
+	let last: R | undefined;
+	return (...args: A): R => {
+		const prev = lastArgs;
+		if (!prev || args.some((a, i) => a !== prev[i])) {
+			last = compute(...args);
+			lastArgs = args;
+		}
+		return last as R;
+	};
+}
+
+/** withNeighbors() of the hovered node. */
+const neighborsOf = memoizeLast(withNeighbors);
+
+/**
+ * Which nodes get a name when labels don't depend on degree (sidebar
+ * preview, or the big view filtered to linked notes): the current and
+ * hovered notes, plus — in the big view — the current note's direct links.
+ * The more names would be drawn at once, the more transparent each one is,
+ * so a heavily-connected note's neighbor labels don't turn into an
+ * unreadable block of overlapping text — but never so transparent they
+ * stop being "permanently visible".
+ */
+const labelledNodes = memoizeLast(
+	(
+		nodes: GNode[],
+		neighborIds: Set<string>,
+		showOnlyLinked: boolean,
+		currentPath: string,
+		hoveredId: string | null,
+		isModal: boolean,
+	) => {
+		const visibleIds = showOnlyLinked ? neighborIds : null;
+		const ids = new Set<string>();
+		for (const n of nodes) {
+			if (visibleIds && !visibleIds.has(n.id)) continue;
+			const isCurrent = n.id === currentPath;
+			const isHovered = n.id === hoveredId;
+			const isNearCurrent = isModal && neighborIds.has(n.id);
+			if (isCurrent || isHovered || isNearCurrent) ids.add(n.id);
+		}
+		const alpha = Math.max(0.55, Math.min(1, 10 / Math.max(ids.size, 1)));
+		return { ids, alpha };
+	},
+);
 
 /**
  * Draws `scene` onto `view`'s canvas. `isModal` is the big view (popup or
@@ -157,7 +220,7 @@ export function drawGraph(
 	const visibleIds = showOnlyLinked ? neighborIds : null;
 
 	const hovered = view.hoveredId ? scene.nodeIndex.get(view.hoveredId) : null;
-	const linkedToHovered = withNeighbors(scene.adjacency, hovered?.id ?? null);
+	const linkedToHovered = neighborsOf(scene.adjacency, hovered?.id ?? null);
 
 	// Label mode: in the big view with "all notes" shown, every note's
 	// name visibility depends on how many links it has (more links =
@@ -170,24 +233,16 @@ export function drawGraph(
 	// 0 once at (or below) the default fit scale, growing as you zoom in.
 	const zoomBoost = Math.max(0, zoomRatio - 1) * 0.5;
 
-	const labelIds = new Set<string>();
-	if (!degreeFade) {
-		for (const n of nodes) {
-			if (visibleIds && !visibleIds.has(n.id)) continue;
-			const isCurrent = n.id === currentPath;
-			const isHovered = n.id === view.hoveredId;
-			const isNearCurrent = isModal && neighborIds.has(n.id);
-			if (isCurrent || isHovered || isNearCurrent) labelIds.add(n.id);
-		}
-	}
-	// The more names would be drawn at once, the more transparent each
-	// one is, so a heavily-connected note's neighbor labels don't turn
-	// into an unreadable block of overlapping text — but never so
-	// transparent they stop being "permanently visible".
-	const labelAlpha = Math.max(
-		0.55,
-		Math.min(1, 10 / Math.max(labelIds.size, 1)),
-	);
+	const labelled = degreeFade
+		? null
+		: labelledNodes(
+				nodes,
+				neighborIds,
+				showOnlyLinked,
+				currentPath,
+				view.hoveredId,
+				isModal,
+			);
 
 	/** Returns null when this node shouldn't get a label at all. */
 	function getLabelAlpha(n: GNode): number | null {
@@ -195,12 +250,12 @@ export function drawGraph(
 		// opacity — degree-based fade and the "many labels at once"
 		// dimming are both about decluttering everything else, not this.
 		if (n.id === view.hoveredId) return 1;
-		if (degreeFade) {
+		if (!labelled) {
 			const degreeComponent = Math.min(n.degree, 8) / 8; // 0..1
 			const a = Math.min(1, degreeComponent * 0.85 + zoomBoost);
 			return a <= 0.03 ? null : a;
 		}
-		return labelIds.has(n.id) ? labelAlpha : null;
+		return labelled.ids.has(n.id) ? labelled.alpha : null;
 	}
 
 	// Edges — (1) always visible: a solid base opacity that never fades
@@ -231,16 +286,25 @@ export function drawGraph(
 	ctx.lineWidth = 1.8 / view.scale;
 	ctx.stroke(hoveredEdges);
 
-	// Nodes — draw the current note LAST (in its own pass) so it always
-	// sits on top of everything else, with a halo — but sized the same
-	// as everyone else, purely by degree (not because it's "the" note).
-	ctx.font = `${11 / view.scale}px system-ui, sans-serif`;
+	// Nodes — batched like the edges: every node of the same color and
+	// opacity (rounded to 1%) goes into one path, filled once. The hovered
+	// node (outlined) is drawn on its own, then every label, so no name
+	// hides under a neighboring node. The current note is drawn LAST (in
+	// its own pass) so it always sits on top of everything else, with a
+	// halo — but sized the same as everyone else, purely by degree (not
+	// because it's "the" note).
+	/** Color → opacity level (0–100) → that batch's path. */
+	const fills = new Map<string, (Path2D | undefined)[]>();
+	let labelCount = 0;
+	let hoveredR = -1;
+	let hoveredX = 0;
+	let hoveredY = 0;
+	let hoveredAlpha = 0;
 	let currentNode: GNode | null = null;
 	for (const n of nodes) {
 		if (!n.revealed) continue;
 		if (visibleIds && !visibleIds.has(n.id)) continue;
-		const isCurrent = n.id === currentPath;
-		if (isCurrent) {
+		if (n.id === currentPath) {
 			currentNode = n;
 			continue;
 		}
@@ -250,7 +314,7 @@ export function drawGraph(
 		const ease = revealEase(n, now);
 		const baseR = baseRadius(n, view.scale);
 		const intensity = animation?.getIntensity?.(n, now) ?? 0;
-		const r = baseR * ease * animationScale(animation, n, now);
+		const r = baseR * ease * animationScale(animation, n, now, intensity);
 		place(n, p);
 
 		if (intensity > 0.01) {
@@ -264,29 +328,64 @@ export function drawGraph(
 			ctx.fill();
 		}
 
-		// Obsidian's own graph "Groups" color — big-view-only (matches
-		// how the graph's own periodic animations are scoped), never
-		// applied to the small sidebar preview.
-		const groupColor = isModal ? scene.nodeColors[n.id] : undefined;
-
-		ctx.globalAlpha = n.dimAlpha * ease;
-		ctx.beginPath();
-		ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-		ctx.fillStyle = isHovered ? colorLabel : (groupColor ?? colorNode);
-		ctx.fill();
-
+		const alpha = n.dimAlpha * ease;
 		if (isHovered) {
-			ctx.lineWidth = 2 / view.scale;
-			ctx.strokeStyle = colorBg;
-			ctx.stroke();
+			hoveredR = r;
+			hoveredX = p.x;
+			hoveredY = p.y;
+			hoveredAlpha = alpha;
+		} else {
+			const level = Math.round(alpha * 100);
+			if (level > 0) {
+				// Obsidian's own graph "Groups" color — big-view-only
+				// (matches how the graph's own periodic animations are
+				// scoped), never applied to the small sidebar preview.
+				const color =
+					(isModal ? scene.nodeColors[n.id] : undefined) ?? colorNode;
+				let byLevel = fills.get(color);
+				if (!byLevel) fills.set(color, (byLevel = []));
+				const path = (byLevel[level] ??= new Path2D());
+				// Each circle its own subpath — no line joining it to the
+				// previous one.
+				path.moveTo(p.x + r, p.y);
+				path.arc(p.x, p.y, r, 0, Math.PI * 2);
+			}
 		}
 
 		const labelA = getLabelAlpha(n);
 		if (labelA !== null) {
-			ctx.globalAlpha = Math.min(labelA, n.dimAlpha) * ease;
-			ctx.fillStyle = colorLabel;
-			ctx.fillText(n.label, p.x + r + 4 / view.scale, p.y + 4 / view.scale);
+			labelTexts[labelCount] = n.label;
+			labelXs[labelCount] = p.x + r + 4 / view.scale;
+			labelYs[labelCount] = p.y + 4 / view.scale;
+			labelAlphas[labelCount] = Math.min(labelA, n.dimAlpha) * ease;
+			labelCount++;
 		}
+	}
+
+	for (const [color, byLevel] of fills) {
+		ctx.fillStyle = color;
+		byLevel.forEach((path, level) => {
+			if (!path) return;
+			ctx.globalAlpha = level / 100;
+			ctx.fill(path);
+		});
+	}
+
+	if (hoveredR >= 0) {
+		ctx.globalAlpha = hoveredAlpha;
+		ctx.beginPath();
+		ctx.arc(hoveredX, hoveredY, hoveredR, 0, Math.PI * 2);
+		ctx.fillStyle = colorLabel;
+		ctx.fill();
+		ctx.lineWidth = 2 / view.scale;
+		ctx.strokeStyle = colorBg;
+		ctx.stroke();
+	}
+
+	ctx.fillStyle = colorLabel;
+	for (let i = 0; i < labelCount; i++) {
+		ctx.globalAlpha = labelAlphas[i]!;
+		ctx.fillText(labelTexts[i]!, labelXs[i]!, labelYs[i]!);
 	}
 
 	if (
@@ -299,7 +398,12 @@ export function drawGraph(
 		const r =
 			baseRadius(currentNode, view.scale) *
 			ease *
-			animationScale(animation, currentNode, now);
+			animationScale(
+				animation,
+				currentNode,
+				now,
+				animation?.getIntensity?.(currentNode, now) ?? 0,
+			);
 		place(currentNode, p);
 		// Halo: soft glow behind the node so it reads as "the" focal point.
 		ctx.globalAlpha = 0.28 * ease;

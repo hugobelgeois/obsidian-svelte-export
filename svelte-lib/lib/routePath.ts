@@ -1,5 +1,11 @@
 import { base } from "$app/paths";
 
+/** `route` with the trailing slash every note's route has on the site
+ * (siteTree/Graph node ids, prerendered page URLs). */
+export function withSlash(route: string): string {
+	return route.endsWith("/") ? route : route + "/";
+}
+
 /**
  * Converts a browser pathname (from `$page.url.pathname`, which includes
  * the site's base path in production — e.g. "/aerethios/Notes/Arvens" on a

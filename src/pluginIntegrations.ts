@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import { App } from "obsidian";
 import * as path from "path";
+import { pluginFolderPath } from "./obsidianUtil";
 
 /**
  * Community plugins whose rendered output gets styled on the exported
@@ -101,10 +102,12 @@ function pluginDir(
 	vaultPath: string,
 	integration: PluginIntegration,
 ): string {
-	const dir =
-		pluginsOf(app).manifests[integration.pluginId]?.dir ??
-		`${app.vault.configDir}/plugins/${integration.pluginId}`;
-	return path.join(vaultPath, dir);
+	return pluginFolderPath(
+		app,
+		vaultPath,
+		integration.pluginId,
+		pluginsOf(app).manifests[integration.pluginId]?.dir,
+	);
 }
 
 /** The plugin's own styles.css (if any), followed by the runtime CSS

@@ -4,38 +4,27 @@
  * section from it, for LinkPreview.svelte's hover panel.
  */
 import { base } from "$app/paths";
-
-/** Must stay identical to slugify() in the plugin's src/constants.ts, which
- * gave the headings their ids (separate module graph — can't import it). */
-function slugify(text: string): string {
-	return text
-		.normalize("NFD")
-		.replace(/[̀-ͯ]/g, "")
-		.toLowerCase()
-		.replace(/\s+/g, "-")
-		.replace(/[^\p{L}\p{N}_-]/gu, "");
-}
+import { withSlash } from "./routePath";
 
 /**
- * Narrow `content` down to a single heading plus its following siblings,
- * up to (but excluding) the next heading of equal or higher level.
- * Returns null if the heading can't be found, so callers can fall back
- * to the full content.
+ * Narrow `content` down to what `fragment` points to: a heading plus its
+ * following siblings, up to (but excluding) the next heading of equal or
+ * higher level — or a single block ("^id"), as Obsidian previews it.
+ * `fragment` is the target's exact id: the plugin already resolved the
+ * link the way Obsidian does. Returns null if it isn't found, so callers
+ * can fall back to the full content.
  */
 function extractFragment(content: Element, fragment: string): string | null {
-	const decoded = decodeURIComponent(fragment);
-	const slug = slugify(decoded);
-
-	const heading =
-		content.querySelector(`#${CSS.escape(slug)}`) ??
-		[...content.querySelectorAll("h1,h2,h3,h4,h5,h6")].find(
-			(el) =>
-				el.id.toLowerCase() === slug.toLowerCase() ||
-				el.textContent?.trim().toLowerCase() === decoded.toLowerCase(),
-		) ??
-		null;
-
-	if (!heading) return null;
+	const target = content.querySelector(`#${CSS.escape(decodeURIComponent(fragment))}`);
+	if (!target) return null;
+	if (!target.matches(HEADING)) {
+		// A list item keeps its list around it, so it still looks like one.
+		const list = target.parentElement;
+		return target.tagName === "LI" && list
+			? `<${list.tagName}>${target.outerHTML}</${list.tagName}>`
+			: target.outerHTML;
+	}
+	const heading = target;
 
 	// Obsidian's renderer wraps every block (heading, paragraph, list…) in
 	// its own <div>, so the section is the heading's block plus the blocks
@@ -78,8 +67,7 @@ function fetchContent(route: string): Promise<Element> {
 async function loadContent(route: string): Promise<Element> {
 	// `route` is the base-less canonical route (e.g. from data-wiki-href) —
 	// add the site's real base ourselves, same as any other internal link.
-	const fullRoute = base + route;
-	const url = fullRoute.endsWith("/") ? fullRoute : fullRoute + "/";
+	const url = withSlash(base + route);
 	const res = await fetch(url, { headers: { Accept: "text/html" } });
 	if (!res.ok) throw new Error(`HTTP ${res.status}`);
 	const text = await res.text();

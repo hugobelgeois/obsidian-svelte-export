@@ -20,7 +20,7 @@ CI (`.github/workflows/lint.yml`) runs `npm ci`, `npm run build`, `npm run lint`
 ## Two codebases in one repo
 
 - **`src/`** — the plugin. Bundled by esbuild into `main.js`; runs inside Obsidian's renderer with both DOM and Node (`fs`, `child_process`) available. Type-checked by `tsconfig.json` (strict, `noUncheckedIndexedAccess`).
-- **`svelte-lib/`** — *template* source, copied verbatim into the exported project's `src/` on every export (`scaffold.ts` → `syncPluginFiles`). It is a Svelte 5 / SvelteKit app and is **not** built, type-checked or linted by this repo. It cannot import from `src/` (separate module graph) — shared constants are duplicated on purpose (e.g. `BASE_PATH_SENTINEL` in `src/constants.ts` ↔ `svelte-lib/lib/basePath.ts`; `slugify` in `src/constants.ts` ↔ `svelte-lib/lib/wikiFetch.ts`; `GraphForces` type in `obsidianGraph.ts` ↔ `graphPhysics.ts`). Anything placed in `svelte-lib/` ends up in the published site.
+- **`svelte-lib/`** — *template* source, copied verbatim into the exported project's `src/` on every export (`scaffold.ts` → `syncPluginFiles`). It is a Svelte 5 / SvelteKit app and is **not** built, type-checked or linted by this repo. It cannot import from `src/` (separate module graph), but `src/` can import from it: what both sides must agree on (`BASE_PATH_SENTINEL`, `COLOR_MODE_KEY`, the `GraphForces` type) lives once in `svelte-lib/lib/shared.ts`, which must stay free of SvelteKit (`$app/…`, `$lib/…`) imports — it's bundled into `main.js` and type-checked by `tsc` too. Anything placed in `svelte-lib/` ends up in the published site.
 
 To check `svelte-lib/` changes, use the exported project's toolchain (destination path is `destinationPath` in `data.json`, e.g. `../aerethios-page` relative to the vault): compile components with its `svelte/compiler`, or run `svelte-kit sync` + `svelte-check` on a scratch copy (its `package.json`/`tsconfig.json`/`vite.config.ts`/`src/app.*`/`src/lib/*.json` + `svelte-lib/` copied into `src/`, `node_modules` junctioned). Don't modify the exported project itself.
 
@@ -30,7 +30,7 @@ To check `svelte-lib/` changes, use the exported project's toolchain (destinatio
 
 1. `ensureSvelteProject` (`scaffold.ts`): first run does `npx sv create` + `npm install`; every run syncs `svelte-lib/`, rebuilds `app.css` from Obsidian's captured CSS + theme + snippets (`obsidianCss.ts`; Style Settings classes in `styleSettings.ts`), patches `vite.config.ts` for adapter-static/GitHub Pages and writes the deploy workflow.
 2. `writeSiteData` writes data the app reads at build time: JSON files in the project's `src/lib/` (`graphConfig`, `themeConfig`, `nodeColors`, `hidden`, `nameMap`, `links`, `styleSettingsClasses`), all loaded through one `import.meta.glob` in `svelte-lib/lib/exportData.ts` (glob, not static imports, so a missing file doesn't break the build).
-3. `loadExportState` decides which notes to re-render (see caching below), then `exportFiles` renders notes 6 at a time.
+3. `loadExportState` (`exportState.ts`, which owns all the state files below) decides which notes to re-render (see caching below), then `exportFiles` renders notes 6 at a time.
 4. Each note: `pageexporter.ts` reads front matter from Obsidian's metadata cache, `noteRenderer.ts` renders the body with **Obsidian's own `MarkdownRenderer`** into an off-screen container, waits for the DOM to settle (plugins/embeds fill in async), then post-processes: internal links → site routes (exported notes) or plain text (anything else, including missing notes); non-exported note embeds → plain text; headings get slug ids; images/app:// URLs → files copied into `static/<vault path>`; plugin/MathJax runtime CSS captured. The result is written as one `{@html …}` string into `src/routes/<sanitized path>/+page.svelte` + `+page.ts`. Shared page chrome (e.g. `LinkPreview`) lives in `+layout.svelte`, not in the generated pages.
 5. `saveExportState` writes `src/lib/pluginCss/*.css`, copies assets, `static/search.json`, sitemap/robots (only if "Site URL" is set).
 
@@ -56,7 +56,7 @@ Rules when changing things:
 ## Graph view (`svelte-lib/lib/Graph.svelte`)
 
 - Physics in `graphPhysics.ts` is a port of Obsidian's own graph worker (d3-force: center, link, many-body, collide, velocityDecay 0.4, alpha decay to 0.001 in 300 ticks). Forces come from the vault's `graph.json`, converted from slider positions like Obsidian does (`computeGraphForces` in `src/obsidianGraph.ts`). All lengths are scaled by `WORLD_SCALE` (0.2; repulsion by its square) so the layout matches Obsidian's at the size the animations are tuned for — keep this if touching physics or animations.
-- The component holds the state, frame loop and markup; drawing is in `graphDraw.ts`, pan/zoom/hit-testing geometry in `graphView.ts`.
+- The component holds the state, frame loop and markup; drawing is in `graphDraw.ts`, pan/zoom/hit-testing geometry in `graphView.ts`, the standalone page's progressive reveal in `graphReveal.ts`.
 - The frame loop sleeps when idle and is woken by `wake()`; it never sleeps while a periodic animation is active in the big view.
 - Every file in `svelte-lib/lib/animations/` (except `types.ts`) is an animation: default-export a `GraphAnimation` and `export const label = "…"` (the settings tab reads that line from the file). Put shared helpers outside that folder (e.g. `lib/easing.ts`).
 

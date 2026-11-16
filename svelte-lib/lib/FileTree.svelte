@@ -12,26 +12,39 @@
 
 	// ── Filtering ──────────────────────────────────────────────────────────
 
+	const hiddenPaths = new Set(HIDDEN_PATHS);
+
+	/** Whether the note is hidden itself or through a folder — one lookup
+	 * per folder level, however many paths are hidden. */
 	function isHidden(node: TreeNode): boolean {
-		return HIDDEN_PATHS.some((p) => node.path === p || node.path.startsWith(p + "/"));
+		const p = node.path.replace(/\/$/, "");
+		for (let i = p.length; i > 0; i = p.lastIndexOf("/", i - 1)) {
+			if (hiddenPaths.has(p.slice(0, i))) return true;
+		}
+		return false;
 	}
 
-	function filterTree(nodes: TreeNode[], q: string): TreeNode[] {
-		const lower = q.toLowerCase();
-		return nodes
-			.filter((n) => !isHidden(n))
-			.flatMap((n) => {
-				if (!n.children) {
-					// Leaf: include if no query or name matches
-					return !q || n.name.toLowerCase().includes(lower) ? [n] : [];
-				}
-				const children = filterTree(n.children, q);
-				if (!children.length) return [];
-				return [{ ...n, children }];
-			});
+	/** The notes `keep` accepts, in the folders holding at least one. */
+	function filterTree(
+		nodes: TreeNode[],
+		keep: (leaf: TreeNode) => boolean,
+	): TreeNode[] {
+		return nodes.flatMap((n) => {
+			if (!n.children) return keep(n) ? [n] : [];
+			const children = filterTree(n.children, keep);
+			return children.length ? [{ ...n, children }] : [];
+		});
 	}
 
-	const filteredTree = $derived(filterTree(siteTree, query));
+	// Hidden paths are fixed for a given build — filtered out once, not
+	// again on every keystroke in the search box.
+	const visibleTree = filterTree(siteTree, (n) => !isHidden(n));
+
+	const filteredTree = $derived.by(() => {
+		if (!query) return visibleTree;
+		const lower = query.toLowerCase();
+		return filterTree(visibleTree, (n) => n.name.toLowerCase().includes(lower));
+	});
 
 	// ── Folder open state ──────────────────────────────────────────────────
 
