@@ -7,6 +7,7 @@ src — the Obsidian plugin (bundled into main.js)
 -- fileSelector.ts — the settings tab's Export/Visible file tree
 -- scaffold.ts — creates/updates the SvelteKit project, copies svelte-lib/, builds app.css, GitHub Pages setup
 -- pageexporter.ts — writes one +page.svelte/+page.ts per note
+-- publishedParts.ts — what of each note gets published (hidden notes: only the sections linked to)
 -- syncedFolder.ts — keeps a folder of the export in sync (static/, note pages, svelte-lib/ copy): copies changed files, prunes stale ones
 -- noteRenderer.ts — renders notes with Obsidian's own renderer, rewrites links/embeds/images for the site
 -- pluginIntegrations.ts — supported community plugins (CSS, settings toggle)

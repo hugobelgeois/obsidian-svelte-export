@@ -4,6 +4,7 @@ import * as path from "path";
 import {
 	COLOR_MODE_KEY,
 	isNote,
+	isWithin,
 	isWithinAny,
 	mimeTypeOf,
 	pageRouteOf,
@@ -29,8 +30,10 @@ import { SyncedFolder } from "./syncedFolder";
  * index and sitemap.
  */
 
-/** Data files read by the site at build time (see svelte-lib/lib/exportData.ts).
- * Returns the Style Settings classes, which patchAppHtml() also needs. */
+/** Data files read by the site at build time (see svelte-lib/lib/exportData.ts),
+ * for `files` — those the site gets (no unpublished hidden note's name ends
+ * up in them). Returns the Style Settings classes, which patchAppHtml() also
+ * needs. */
 export function writeSiteData(
 	ctx: ExportContext,
 	files: TFile[],
@@ -84,9 +87,14 @@ export function writeSiteData(
 	// with accents/special characters would never match the FileTree's.
 	// Only the topmost hidden paths: the FileTree hides everything under
 	// them anyway, and hiddenPaths lists every descendant of a hidden folder.
+	// And only those with a published page under them — the others have
+	// nothing on the site to hide, and their names shouldn't be on it.
+	const notePaths = files.filter(isNote).map((f) => f.path);
 	writeLibJson(
 		"hidden.json",
-		topmostPaths(settings.hiddenPaths).map(routeOf),
+		topmostPaths(settings.hiddenPaths)
+			.filter((h) => notePaths.some((p) => isWithin(p, h)))
+			.map(routeOf),
 	);
 
 	// ── nameMap.json ────────────────────────────────────────────────────

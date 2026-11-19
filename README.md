@@ -11,9 +11,12 @@ Pages. Desktop only.
   blocks look as they do in Obsidian. `%%comments%%` are left out.
 - Your Obsidian theme, CSS snippets, appearance settings and Style
   Settings choices.
-- A file tree (folders and notes can be hidden from it while still being
-  exported), full-text search, a table of contents, and link previews on
-  hover.
+- A file tree, full-text search, a table of contents, and link previews on
+  hover. Folders and notes can be hidden: a hidden note only gets a page
+  if something published links to it, and then only shows what is linked
+  (`[[Note]]` → all of it, `[[Note#Heading]]` → that heading's section,
+  `[[Note#^block]]` → that block). A hidden note nothing links to isn't
+  published at all.
 - A graph view (sidebar preview, popup, or the site's home page) using
   Obsidian's own graph physics, forces and color groups.
 - Links and embeds pointing to notes that aren't exported (or don't

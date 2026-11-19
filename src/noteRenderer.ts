@@ -26,10 +26,11 @@ import { PLUGIN_INTEGRATIONS, PluginIntegration } from "./pluginIntegrations";
  * Mermaid, embeds and community plugins' blocks all come out exactly as in
  * Obsidian, and %%comments%% are left out, as in reading view.
  *
- * Links and embeds are then rewritten for the site: a note that's part of
- * the export becomes a site link (or its embedded content); anything else
- * — a note that isn't exported, or doesn't exist — becomes plain text, so
- * nothing of it is published.
+ * Links and embeds are then rewritten for the site: a note with a page on
+ * the site becomes a site link (or its embedded content); anything else
+ * — a note that isn't exported, a hidden one nothing links to (see
+ * publishedParts.ts), or no such note — becomes plain text, so nothing of
+ * it is published.
  */
 
 /** Vault files a rendered note depends on — see dependencyKey(). */
@@ -128,7 +129,7 @@ export class NoteRenderer {
 		private readonly app: App,
 		private readonly vaultPath: string,
 		active: PluginIntegration[],
-		/** Vault paths of every note in this export. */
+		/** Vault paths of every note with a page on the site. */
 		private readonly exportedPaths: Set<string>,
 	) {
 		this.activeLanguages = new Set(active.flatMap((i) => i.codeBlockLanguages));
@@ -141,7 +142,14 @@ export class NoteRenderer {
 		}));
 	}
 
-	async render(file: TFile, body: string): Promise<RenderedNote> {
+	/** `headingIds`: the ids of the headings `body` shows, when it's only
+	 * part of the note (see publishedParts.ts) — ids are numbered across
+	 * the whole note, as links to it compute them (see anchorId). */
+	async render(
+		file: TFile,
+		body: string,
+		headingIds?: string[],
+	): Promise<RenderedNote> {
 		const { markdown, languages } = prepareMarkdown(
 			body,
 			this.activeLanguages,
@@ -184,7 +192,7 @@ export class NoteRenderer {
 			this.rewriteEmbeds(el, file, deps, linkedRoutes);
 			this.rewriteLinks(el, file, deps, linkedRoutes);
 			el.querySelectorAll("a.tag").forEach((a) => replaceTag(a, "span"));
-			const headings = labelHeadings(el);
+			const headings = labelHeadings(el, headingIds);
 			wrapTables(el);
 			const assets = rewriteLocalUrls(el, this.vaultPath, this.localFiles);
 			const css = await this.captureCss(el, blocks);
@@ -263,10 +271,11 @@ export class NoteRenderer {
 	}
 
 	/**
-	 * Embedded notes stay inline (Obsidian already rendered them) if they're
-	 * part of the export — hidden from the file tree or not. Otherwise —
-	 * not exported, or no such note — they're reduced to plain text, so
-	 * nothing of them is published. Embedded images/media are kept as-is —
+	 * Embedded notes stay inline (Obsidian already rendered them) if they
+	 * have a page — visible, or hidden but published (an embed of a hidden
+	 * note publishes what it embeds). Otherwise — not exported, or no such
+	 * note — they're reduced to plain text, so nothing of them is
+	 * published. Embedded images/media are kept as-is —
 	 * their files are copied by rewriteLocalUrls().
 	 */
 	private rewriteEmbeds(
@@ -291,9 +300,10 @@ export class NoteRenderer {
 		}
 	}
 
-	/** Internal links → site links for exported notes (hidden from the file
-	 * tree or not); plain text when they lead nowhere on the site — a note
-	 * that isn't exported, or no such note at all. */
+	/** Internal links → site links for notes with a page (hidden from the
+	 * file tree or not); plain text when they lead nowhere on the site — a
+	 * note that isn't exported, a hidden one nothing publishes (e.g. linked
+	 * by a fragment that matches nothing), or no such note at all. */
 	private rewriteLinks(
 		el: HTMLElement,
 		file: TFile,
@@ -506,7 +516,7 @@ export function dependencyKey(
 // ── DOM helpers ────────────────────────────────────────────────────────────
 
 /** Splits "Note#Heading" into its note part and fragment. */
-function splitLinktext(target: string): { linkpath: string; fragment: string } {
+export function splitLinktext(target: string): { linkpath: string; fragment: string } {
 	const hashIdx = target.indexOf("#");
 	if (hashIdx === -1) return { linkpath: target.trim(), fragment: "" };
 	return {
@@ -577,15 +587,25 @@ function headingIdsByOffset(headings: HeadingCache[]): Map<number, string> {
 	return ids;
 }
 
+/** The site ids of the note's headings at `offsets` (their start in the
+ * file), numbered across all of its headings. */
+export function headingIdsAt(
+	cache: { headings?: HeadingCache[] } | null,
+	offsets: number[],
+): string[] {
+	const ids = headingIdsByOffset(cache?.headings ?? []);
+	return offsets.map((o) => ids.get(o) ?? "");
+}
+
 /** The site id of a block's "^id". */
 const blockId = (id: string) => `^${id}`;
 
 /**
  * Gives every heading of the note itself (not those inside embeds or
  * plugin blocks) the id the site's links and table of contents use (see
- * headingIds).
+ * headingIds) — or `knownIds`, when given for exactly the headings found.
  */
-function labelHeadings(el: HTMLElement) {
+function labelHeadings(el: HTMLElement, knownIds?: string[]) {
 	const selector = ":is(h1, h2, h3, h4, h5, h6)";
 	const els = Array.from(
 		el.querySelectorAll<HTMLElement>(
@@ -595,7 +615,10 @@ function labelHeadings(el: HTMLElement) {
 	const texts = els.map((h) =>
 		(h.getAttribute("data-heading") ?? h.textContent ?? "").trim(),
 	);
-	const ids = headingIds(texts);
+	const ids =
+		knownIds?.length === els.length && knownIds.every(Boolean)
+			? knownIds
+			: headingIds(texts);
 	return els.map((h, i): RenderedNote["headings"][number] => {
 		const id = ids[i] ?? "heading";
 		h.id = id;

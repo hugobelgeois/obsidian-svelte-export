@@ -3,6 +3,7 @@ import * as path from "path";
 import {
 	IMAGE_EXTENSIONS,
 	isNote,
+	isWithinAny,
 	routeOf,
 	staticFilePath,
 } from "./constants";
@@ -30,6 +31,7 @@ import {
 } from "./obsidianUtil";
 import { NoteRenderer } from "./noteRenderer";
 import { exportFile, isNotePage, pageFiles, SiteInfo } from "./pageexporter";
+import { publishedParts } from "./publishedParts";
 import { ensureSvelteProject } from "./scaffold";
 import type { SvelteExporterSettings } from "./settings";
 import {
@@ -114,11 +116,18 @@ export class SiteExporter {
 			ctx.settings.selectedTheme,
 		);
 
-		// Vault paths of every note in this export, and their routes — the
-		// single source of truth for "which routes should exist right now",
-		// reused to pick the default page and resolve links.
-		const exportedNotes = new Set(files.filter(isNote).map((f) => f.path));
-		const expectedRoutes = new Set([...exportedNotes].map(routeOf));
+		// What of each note gets a page (see publishedParts.ts) — the single
+		// source of truth for "which routes should exist right now", reused
+		// to pick the default page and resolve links. A hidden note nothing
+		// links to gets none: it's left out of everything the site is made
+		// of, so its old page is pruned. So is a hidden image, unless a
+		// published page shows it (then it's copied as that page's asset).
+		const hidden = new Set(ctx.settings.hiddenPaths);
+		const parts = publishedParts(ctx.app, files, ctx.settings.hiddenPaths);
+		const siteFiles = files.filter((f) =>
+			isNote(f) ? parts.has(f.path) : !isWithinAny(f.path, hidden),
+		);
+		const expectedRoutes = new Set([...parts.keys()].map(routeOf));
 
 		const ready = await ensureSvelteProject(
 			ctx,
@@ -146,17 +155,19 @@ export class SiteExporter {
 		writeCustomScripts(ctx);
 		const styleSettingsClasses = writeSiteData(
 			ctx,
-			files,
+			siteFiles,
 			activeCss,
 			obsidianCss.styleSettings,
 		);
 		patchAppHtml(ctx, staticFiles, styleSettingsClasses);
 
 		const site = this.siteInfo();
-		const state = loadExportState(ctx, files, exportedNotes, site);
-		const counts = await this.exportFiles(staticFiles, pages, state);
+		const state = loadExportState(ctx, siteFiles, parts, site);
+		const counts = await this.exportFiles(siteFiles, staticFiles, pages, state);
+		// Hidden notes nothing publishes count as skipped.
+		counts.skipped += files.length - siteFiles.length;
 		saveExportState(ctx, staticFiles, state);
-		const listed = listedNotes(files, ctx.settings.hiddenPaths);
+		const listed = listedNotes(siteFiles, ctx.settings.hiddenPaths);
 		writeSearchIndex(staticFiles, listed, state.pageState.pages);
 		writeSitemap(staticFiles, listed, site);
 		// Last, once everything the site needs has been copied/written —
@@ -170,6 +181,7 @@ export class SiteExporter {
 	/** The per-file export loop: images are copied, notes rendered (unless
 	 * up to date). Updates `state` as it goes. */
 	private async exportFiles(
+		files: TFile[],
 		staticFiles: SyncedFolder,
 		pages: SyncedFolder,
 		state: ExportState,
@@ -180,10 +192,12 @@ export class SiteExporter {
 			app,
 			vaultPath,
 			state.active,
-			state.exportedNotes,
+			state.publishedNotes,
 		);
 
-		let processed = 0;
+		// The progress bar counts every selected file — those left out of
+		// the site (unpublished hidden notes) are done already.
+		let processed = this.files.length - files.length;
 		const exportOne = async (file: TFile) => {
 			this.progressModal.update(++processed, file.path);
 			try {
@@ -207,6 +221,7 @@ export class SiteExporter {
 					}
 					const result = await exportFile(
 						file,
+						state.parts.get(file.path) ?? "all",
 						pages,
 						app,
 						renderer,
@@ -230,7 +245,7 @@ export class SiteExporter {
 			let next = 0;
 			await Promise.all(
 				Array.from({ length: RENDER_CONCURRENCY }, async () => {
-					for (let file; (file = this.files[next++]); ) await exportOne(file);
+					for (let file; (file = files[next++]); ) await exportOne(file);
 				}),
 			);
 		} finally {

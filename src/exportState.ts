@@ -10,6 +10,7 @@ import {
 	writeJsonFile,
 } from "./obsidianUtil";
 import { ExportResult, PAGE_FORMAT_VERSION, SiteInfo } from "./pageexporter";
+import { partKey, type PublishedPart } from "./publishedParts";
 import {
 	activeIntegrations,
 	buildIntegrationCss,
@@ -48,6 +49,9 @@ export interface PageState {
 	deps: NoteDeps;
 	/** dependencyKey() of `deps` when the page was rendered. */
 	depsKey: string;
+	/** partKey() of what of the note the page shows — absent for all of
+	 * it. Changes when links to a hidden note change. */
+	part?: string;
 }
 
 /** .export-pages.json — every page's state, plus what's shared by all of
@@ -73,8 +77,10 @@ export interface ExportState {
 	pageState: PagesFile;
 	/** Plugin integrations whose blocks get rendered this time. */
 	active: PluginIntegration[];
-	/** Vault paths of every note in this export. */
-	exportedNotes: Set<string>;
+	/** Vault path → what of it is published, for every note with a page. */
+	parts: Map<string, PublishedPart>;
+	/** Their vault paths. */
+	publishedNotes: Set<string>;
 	site: SiteInfo;
 }
 
@@ -96,11 +102,13 @@ function linksJson(pages: Record<string, PageState>): Record<string, string[]> {
  */
 export function loadExportState(
 	ctx: ExportContext,
+	/** The files the site gets — notes without a published part left out. */
 	files: TFile[],
-	exportedNotes: Set<string>,
+	parts: Map<string, PublishedPart>,
 	site: SiteInfo,
 ): ExportState {
 	const { app, settings, vaultPath, destinationPath } = ctx;
+	const publishedNotes = new Set(parts.keys());
 	const currentFilePaths = new Set(files.map((f) => f.path));
 	const keepCurrent = <T>(record: Record<string, T>) =>
 		Object.fromEntries(
@@ -169,17 +177,19 @@ export function loadExportState(
 
 	// A page also goes stale when something it depends on changes —
 	// a linked note renamed, removed or (de)selected for export, an
-	// embedded note edited, an unresolved link that now resolves.
+	// embedded note edited, an unresolved link that now resolves — or,
+	// for a hidden note, when what links to it changes what it shows.
 	for (const [filePath, page] of Object.entries(pageState.pages)) {
 		if (
-			dependencyKey(app, filePath, page.deps, exportedNotes) !==
-			page.depsKey
+			dependencyKey(app, filePath, page.deps, publishedNotes) !==
+				page.depsKey ||
+			partKey(parts.get(filePath)) !== page.part
 		) {
 			delete cache[filePath];
 		}
 	}
 
-	return { cache, pageState, active, exportedNotes, site };
+	return { cache, pageState, active, parts, publishedNotes, site };
 }
 
 /**
@@ -211,7 +221,8 @@ export function recordPage(
 		assets,
 		css,
 		deps,
-		depsKey: dependencyKey(ctx.app, note.path, deps, state.exportedNotes),
+		depsKey: dependencyKey(ctx.app, note.path, deps, state.publishedNotes),
+		part: partKey(state.parts.get(note.path)),
 	};
 }
 

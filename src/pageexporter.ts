@@ -5,7 +5,12 @@ import {
 	pageRouteOf,
 	sanitizeRoutePath,
 } from "./constants";
-import { NoteRenderer, RenderedNote } from "./noteRenderer";
+import { headingIdsAt, NoteRenderer, RenderedNote } from "./noteRenderer";
+import {
+	headingOffsetsIn,
+	partMarkdown,
+	type PublishedPart,
+} from "./publishedParts";
 import type { SyncedFolder } from "./syncedFolder";
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -31,11 +36,13 @@ export interface SiteInfo {
 }
 
 /**
- * Renders `file` with Obsidian's own renderer (see noteRenderer.ts) and
- * writes it as src/routes/<route>/+page.svelte + +page.ts.
+ * Renders `file` — or only its published `part`, for a hidden note (see
+ * publishedParts.ts) — with Obsidian's own renderer (see noteRenderer.ts)
+ * and writes it as src/routes/<route>/+page.svelte + +page.ts.
  */
 export async function exportFile(
 	file: TFile,
+	part: PublishedPart,
 	pages: SyncedFolder,
 	app: App,
 	renderer: NoteRenderer,
@@ -45,12 +52,24 @@ export async function exportFile(
 	// Obsidian's own front-matter parsing (real YAML: quoted strings,
 	// lists, booleans…) — the body starts right after its closing "---".
 	const cache = app.metadataCache.getFileCache(file);
-	const meta: Record<string, unknown> = cache?.frontmatter ?? {};
-	const fmEnd = cache?.frontmatterPosition?.end.offset;
-	const body =
-		fmEnd === undefined ? markdown : markdown.slice(fmEnd).replace(/^\r?\n/, "");
+	let meta: Record<string, unknown> = cache?.frontmatter ?? {};
+	let body: string;
+	let headingIds: string[] | undefined;
+	if (part === "all") {
+		const fmEnd = cache?.frontmatterPosition?.end.offset;
+		body =
+			fmEnd === undefined
+				? markdown
+				: markdown.slice(fmEnd).replace(/^\r?\n/, "");
+	} else {
+		body = partMarkdown(markdown, part, cache);
+		headingIds = headingIdsAt(cache, headingOffsetsIn(cache, part));
+		// Only what was linked to is shown — not the note's description.
+		meta = { ...meta };
+		delete meta.description;
+	}
 
-	const rendered = await renderer.render(file, body);
+	const rendered = await renderer.render(file, body, headingIds);
 	const { pageSvelte, pageTs } = noteToSvelte(
 		meta,
 		file,
