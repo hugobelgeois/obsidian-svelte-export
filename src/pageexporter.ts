@@ -20,7 +20,7 @@ import type { SyncedFolder } from "./syncedFolder";
  * matching svelte-lib/ files (e.g. a renamed import) — every cached page is
  * then regenerated on the next export instead of being skipped.
  */
-export const PAGE_FORMAT_VERSION = 8;
+export const PAGE_FORMAT_VERSION = 9;
 
 export type ExportResult = Pick<
 	RenderedNote,

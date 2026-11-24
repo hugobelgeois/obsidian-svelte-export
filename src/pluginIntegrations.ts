@@ -97,10 +97,10 @@ export function integrationSignature(
 	return mtimes.join(":");
 }
 
-function pluginDir(
+export function pluginDir(
 	app: App,
 	vaultPath: string,
-	integration: PluginIntegration,
+	integration: { pluginId: string },
 ): string {
 	return pluginFolderPath(
 		app,

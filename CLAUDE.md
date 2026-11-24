@@ -64,6 +64,8 @@ Rules when changing things:
 
 `PLUGIN_INTEGRATIONS` in `pluginIntegrations.ts` lists community plugins whose CSS is shipped with the pages using their blocks (currently Fantasy Statblocks). All enabled plugins render via Obsidian anyway; an integration adds CSS, strips its interactive bits, and can be disabled in settings (its code blocks are then renamed to `text` before rendering). A change of plugin version/settings changes its signature and re-renders affected pages.
 
+Statblocks whose layout has `javascript` blocks stay interactive: `src/liveStatblocks.ts` puts the layout, the statblock sources and their parsed YAML in a `data-live-statblock` attribute; `svelte-lib/lib/liveStatblocks.ts` runs that code in the browser with a stand-in `app` (in-memory notes) and re-renders the statblock, porting the plugin's DOM. Layouts with block types it doesn't render stay static.
+
 ## Tests
 
 vitest, in `tests/`. The `obsidian` package has no runtime code, so `vitest.config.ts` aliases it to `tests/obsidianStub.ts`. Tests are therefore excluded from `tsc` and eslint (they're typed against the stub); keep tested modules free of Obsidian runtime calls at import time.

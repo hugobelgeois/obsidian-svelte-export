@@ -7,6 +7,7 @@
 	import RightSidebar from "$lib/RightSidebar.svelte";
 	import ThemeToggle from "$lib/ThemeToggle.svelte";
 	import { DEFAULT_COLOR_MODE, STYLE_SETTINGS_CLASSES } from "$lib/exportData";
+	import { startLiveStatblocks } from "$lib/liveStatblocks";
 	import { COLOR_MODE_KEY } from "$lib/shared";
 	import { isMobileWidth } from "$lib/viewport";
 	import type { Snippet } from "svelte";
@@ -103,6 +104,8 @@
 		rightCollapsed = true;
 		return true;
 	}
+
+	afterNavigate(startLiveStatblocks);
 
 	onMount(() => {
 		document.body.classList.add(

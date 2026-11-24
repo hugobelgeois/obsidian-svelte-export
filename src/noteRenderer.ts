@@ -16,6 +16,11 @@ import {
 	staticFilePath,
 	staticFileUrl,
 } from "./constants";
+import {
+	markLiveStatblocks,
+	type StatblockLayouts,
+	STATBLOCKS_PLUGIN_ID,
+} from "./liveStatblocks";
 import { cssRulesText, inlineRelativeUrls } from "./obsidianCss";
 import { PLUGIN_INTEGRATIONS, PluginIntegration } from "./pluginIntegrations";
 
@@ -131,6 +136,10 @@ export class NoteRenderer {
 		active: PluginIntegration[],
 		/** Vault paths of every note with a page on the site. */
 		private readonly exportedPaths: Set<string>,
+		/** Fantasy Statblocks' layouts — see liveStatblocks.ts. */
+		private readonly statblockLayouts: StatblockLayouts,
+		/** Whether all of a note is published, not just parts of it. */
+		private readonly isFullyPublished: (file: TFile) => boolean,
 	) {
 		this.activeLanguages = new Set(active.flatMap((i) => i.codeBlockLanguages));
 		this.integrations = active.map((integration) => ({
@@ -189,6 +198,7 @@ export class NoteRenderer {
 				],
 			);
 			stripInteractivity(el, blocks);
+			await this.markLiveStatblocks(file, body, blocks, deps);
 			this.rewriteEmbeds(el, file, deps, linkedRoutes);
 			this.rewriteLinks(el, file, deps, linkedRoutes);
 			el.querySelectorAll("a.tag").forEach((a) => replaceTag(a, "span"));
@@ -228,6 +238,30 @@ export class NoteRenderer {
 			component.unload();
 			el.remove();
 		}
+	}
+
+	private async markLiveStatblocks(
+		file: TFile,
+		body: string,
+		blocks: [ActiveIntegration, HTMLElement[]][],
+		deps: DepSets,
+	) {
+		const found = blocks.find(
+			([{ integration }]) => integration.pluginId === STATBLOCKS_PLUGIN_ID,
+		)?.[1];
+		if (!found?.length) return;
+		const { notes, unresolved } = await markLiveStatblocks(
+			this.app,
+			file,
+			body,
+			// Those of embedded notes aren't in `body`.
+			found.filter((b) => !b.closest(".internal-embed")),
+			this.statblockLayouts,
+			this.isFullyPublished,
+		);
+		// As for embeds, the page holds some of those notes' content.
+		for (const p of notes) deps.embeds.add(p);
+		for (const linkpath of unresolved) deps.unresolved.add(linkpath);
 	}
 
 	dispose(): void {

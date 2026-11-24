@@ -29,8 +29,10 @@ import {
 	getVaultBasePath,
 	resolveDestinationPath,
 } from "./obsidianUtil";
+import { readLayouts, STATBLOCKS_PLUGIN_ID } from "./liveStatblocks";
 import { NoteRenderer } from "./noteRenderer";
 import { exportFile, isNotePage, pageFiles, SiteInfo } from "./pageexporter";
+import { pluginDir } from "./pluginIntegrations";
 import { publishedParts } from "./publishedParts";
 import { ensureSvelteProject } from "./scaffold";
 import type { SvelteExporterSettings } from "./settings";
@@ -193,6 +195,10 @@ export class SiteExporter {
 			vaultPath,
 			state.active,
 			state.publishedNotes,
+			readLayouts(
+				pluginDir(app, vaultPath, { pluginId: STATBLOCKS_PLUGIN_ID }),
+			),
+			(note) => state.parts.get(note.path) === "all",
 		);
 
 		// The progress bar counts every selected file — those left out of
